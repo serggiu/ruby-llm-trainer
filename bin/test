@@ -1,0 +1,49 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Runs every test/test_*.rb and reports per-file results. Exits non-zero if
+# any test file fails (each file exits non-zero on assertion failure).
+#
+# Usage:
+#   ruby bin/test                 # tokenizer golden tests: auto-detect the
+#                                 # Qwen3-8B MLX cache, else skipped
+#   ruby bin/test --model DIR     # explicit model dir for golden tests
+#   TOKENIZER_MODEL_DIR=DIR ruby bin/test
+
+require "rbconfig"
+
+ROOT = File.expand_path("..", __dir__)
+RUBY = RbConfig.ruby
+
+# --- model dir for the tokenizer golden tests (optional) ---
+model_dir = nil
+if (i = ARGV.index("--model"))
+  model_dir = ARGV[i + 1]
+  abort "usage: #{$PROGRAM_NAME} [--model DIR]" if model_dir.nil?
+end
+model_dir ||= ENV["TOKENIZER_MODEL_DIR"]
+if model_dir.nil? || model_dir.empty?
+  cached = Dir.glob(File.expand_path(
+    "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
+  )).first
+  model_dir = File.dirname(cached) if cached
+end
+ENV["TOKENIZER_MODEL_DIR"] = model_dir unless model_dir.nil? || model_dir.empty?
+
+tests = Dir.glob(File.join(ROOT, "test", "test_*.rb")).sort
+abort "no tests found in test/" if tests.empty?
+
+failed = []
+tests.each do |t|
+  ok = system(RUBY, t)
+  puts ok ? "PASS #{File.basename(t)}" : "FAIL #{File.basename(t)}"
+  failed << File.basename(t) unless ok
+end
+
+puts
+if failed.empty?
+  puts "All #{tests.size} test file(s) passed."
+else
+  puts "FAILED: #{failed.join(', ')}"
+  exit 1
+end

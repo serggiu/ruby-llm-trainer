@@ -283,36 +283,46 @@ end
 
 # Greedy line-based packing of +text+ into chunks of at most +max_tokens+
 # estimated tokens each. Lines are kept whole; a single over-long line
-# (minified code, ...) is hard-split by characters.
+# (minified code, ...) is split by characters. Chunks are measured in BYTES
+# (estimate_tokens counts bytes), so multibyte content (emoji, CJK) never
+# lets a chunk exceed the token budget.
 def split_text_chunks(text, max_tokens)
   return [] if text.empty?
 
-  max_chars = (max_tokens * split_chars_per_token).floor
+  max_bytes = (max_tokens * split_chars_per_token).floor
   chunks = []
   current = +""
-  current_chars = 0
+  current_bytes = 0
 
   text.lines.each do |line|
-    line_chars = line.length
+    line_bytes = line.bytesize
 
-    if !current.empty? && current_chars + line_chars > max_chars
-      chunks << current
-      current = +""
-      current_chars = 0
-    end
-
-    if line_chars > max_chars
+    if line_bytes > max_bytes
+      # Single over-long line: flush the pending chunk, then split the line
+      # by characters into byte-budgeted pieces (multibyte-safe).
       chunks << current unless current.empty?
-      current = +""
-      current_chars = 0
-      offset = 0
-      while offset < line_chars
-        chunks << line[offset, max_chars]
-        offset += max_chars
+      piece = +""
+      piece_bytes = 0
+      line.each_char do |ch|
+        if !piece.empty? && piece_bytes + ch.bytesize > max_bytes
+          chunks << piece
+          piece = +""
+          piece_bytes = 0
+        end
+        piece << ch
+        piece_bytes += ch.bytesize
       end
+      chunks << piece unless piece.empty?
+      current = +""
+      current_bytes = 0
     else
+      if !current.empty? && current_bytes + line_bytes > max_bytes
+        chunks << current
+        current = +""
+        current_bytes = 0
+      end
       current << line
-      current_chars += line_chars
+      current_bytes += line_bytes
     end
   end
 

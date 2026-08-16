@@ -89,7 +89,10 @@ in a single run (see [TRAIN.md](TRAIN.md)).
 
 ## Prerequisites
 
-- **Ruby 3+** (the scripts use only the standard library).
+- **Ruby 3+** (the scripts use only the standard library — the whole data
+  pipeline is pure Ruby: generation, tokenization (`tools/tokenizer.rb`), and
+  dataset verification included. Python is used only by the optional MLX
+  training environment, see [TRAIN.md](TRAIN.md)).
 - Install a modern Ruby with
   [rbenv](https://github.com/rbenv/rbenv) or another Ruby package manager:
   ```bash
@@ -262,6 +265,100 @@ ruby build_attribution.rb                  # → Attribution.md
 
 ---
 
+## Tools
+
+### `tools/tokenizer.rb` — our own tokenizer (pure Ruby)
+
+A self-contained re-implementation of the HuggingFace byte-level BPE
+tokenizer (the `tokenizer.json` format). It loads a model's tokenizer files
+and reproduces the original tokenizer's token IDs exactly for this pipeline's
+chat data — verified against the original Python/transformers tokenizer
+(identical token IDs on sampled data, 0 count mismatches on 3,000 real
+entries). No Python and no gems: standard library only.
+
+Implemented: NFC normalization, added/special tokens matched atomically, the
+GPT-2-style pre-tokenization regex, byte-level encoding, BPE merging with a
+per-word cache, and the Qwen-style chat template (system/user/assistant +
+generation prompt, including the empty `<think>` block for the final
+assistant message). The template covers the standard message structure;
+tool-call and multi-step reasoning branches of exotic templates are not
+replicated.
+
+```bash
+ruby tools/tokenizer.rb <model_dir>   # CLI: token count of each stdin line
+```
+
+The CLI counts tokens per stdin line; `--ids` also prints the token ids, and
+`--chat '<messages json>'` tokenizes a chat (template applied) instead of
+stdin. [TOKENIZER.md](TOKENIZER.md) walks through comparing both modes
+against the original Python tokenizer, step by step.
+
+As a library:
+
+```ruby
+tok = Tokenizer.new(model_dir)
+tok.count(text)                # token count of raw text
+tok.encode(text)               # array of token ids
+tok.apply_chat_template(msgs)  # Qwen-style chat text
+tok.count_messages(msgs)       # token count of the templated chat
+```
+
+### `tools/seqlen_stats.rb` — dataset length distribution
+
+Reports sample count, min/mean/p50/p90/p99/max token lengths, and how many
+samples exceed a threshold (i.e. would be truncated during training). With a
+model directory it uses the real tokenizer; without one it falls back to the
+generator's conservative estimator:
+
+```bash
+ruby tools/seqlen_stats.rb dataset.jsonl <model_dir> [max_len]
+ruby tools/seqlen_stats.rb dataset.jsonl [max_len]
+```
+
+### `tools/find_long.rb` — find over-threshold entries
+
+Lists the entries of a dataset whose token length exceeds a threshold (same
+two counting modes as `seqlen_stats.rb`). Useful for spotting what would be
+truncated, or for checking data you didn't generate yourself.
+
+```bash
+ruby tools/find_long.rb dataset.jsonl <model_dir> [max_len] [limit]
+ruby tools/find_long.rb dataset.jsonl [max_len] [limit]
+```
+
+### `tools/memmon.rb` — RAM monitor
+
+Polls system-wide free memory every 2 s and prints timestamped readings —
+run it in the background while training, then read the log:
+
+```bash
+ruby tools/memmon.rb [duration_seconds]   # default 1800
+```
+
+### `tools/run_capped.rb` — optional training watchdog
+
+Wraps a training command. By default it is a transparent pass-through
+(signals and exit codes behave as if the command ran directly); with
+`WATCHDOG=1` it polls free RAM and SIGKILLs the run if it drops below
+`--min-free-gb` (default 4 GB) — an abort instead of a system freeze:
+
+```bash
+WATCHDOG=1 ruby tools/run_capped.rb --min-free-gb 4 -- .venv/bin/mlx_lm.lora ...
+```
+
+## Tests
+
+```bash
+ruby bin/test            # runs every test/test_*.rb; exits non-zero on failure
+```
+
+- `test/test_split.rb` — context-length bounding (splitting) invariants.
+- `test/test_tokenizer.rb` — tokenizer mechanics always run; golden token-ID
+  tests run when a model directory is available (auto-detected from the
+  Qwen3-8B MLX cache, or `ruby bin/test --model DIR`).
+
+---
+
 ## How agents use the context files
 
 ### Source code context (`code_context/`)
@@ -291,6 +388,7 @@ conventions, test commands, and architectural guidance.
 ~/Desktop/ruby-trainer/
 ├── README.md                   ← You are here
 ├── TRAIN.md                    ← Step-by-step local model training (MLX)
+├── TOKENIZER.md                ← Compare our tokenizer vs the Python reference
 ├── main.rb                     ← One-shot pipeline (code + docs + datasets)
 ├── build_code_context.rb       ← Repos in _sources/ → code_context/ + code datasets
 ├── build_docs_context.rb       ← Repos with guides → docs_context/
@@ -300,6 +398,9 @@ conventions, test commands, and architectural guidance.
 ├── build_sft_pairs.rb          ← Task-oriented SFT set builder
 ├── build_attribution.rb        ← Regenerates Attribution.md (git-ignored)
 ├── build_mlx_data.rb           ← ShareGPT → MLX chat format converter
+├── bin/test                     ← Runs all tests (test/test_*.rb)
+├── test/                        ← Tests: split logic + tokenizer golden values
+├── tools/                       ← tokenizer.rb + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
 ├── _sources/                   ← Git clones of the source repositories
 ├── Attribution.md              ← Generated (git-ignored): license table per source
 ├── code_context/               ← Generated: one .md + one dataset per repo
