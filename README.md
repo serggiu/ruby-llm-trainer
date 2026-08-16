@@ -8,9 +8,6 @@
 
 # Ruby LLM Trainer — MLX fine-tuning for AI coding agents
 
-Training summary by DeepSeek V4 Flash:
-> The model is not a student being quizzed and corrected — it's a parrot being shown thousands of correct transcripts and learning to continue them.
-
 A small pipeline that turns any Ruby repositories placed under `_sources/`
 into:
 
@@ -85,6 +82,9 @@ to run `ruby bin/build` first.
 
 **To train a model on this data** (install MLX, run continued pretraining +
 SFT, evaluate the result), follow [TRAIN.md](TRAIN.md).
+
+Training summary by DeepSeek V4 Flash:
+> The model is not a student being quizzed and corrected — it's a parrot being shown thousands of correct transcripts and learning to continue them.
 
 ## Training recommendation
 
