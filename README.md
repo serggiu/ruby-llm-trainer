@@ -384,6 +384,7 @@ conventions, test commands, and architectural guidance.
 ~/Desktop/ruby-trainer/
 ├── README.md                   ← You are here
 ├── TRAIN.md                    ← Step-by-step local model training (MLX)
+├── RESULTS.md                  ← Log of training runs (hardware, time, loss)
 ├── bin/build                   ← One-shot data pipeline (docs + code + datasets + SFT)
 ├── bin/train                   ← Rebuild slice + run LoRA training
 ├── bin/export                   ← Export the trained adapter as a standalone model
