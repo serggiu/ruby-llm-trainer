@@ -28,6 +28,7 @@ assert_equal "proper", p[:slice], "default slice"
 assert_equal [3000, 200], [p[:train_count], p[:valid_count]], "proper slice sizes"
 assert p[:slice_dir].end_with?("_mlx/qwen3_proper"), "slice dir under the data root"
 assert p[:sft_set].end_with?("_dataset/sft_train_set.jsonl"), "sft set under the data root"
+assert p[:log_path].end_with?("_mlx/train_proper.log"), "log path under the data root, named by slice"
 assert_equal false, p[:watchdog], "watchdog off by default"
 assert_equal false, p[:dry_run], "dry-run off by default"
 assert p[:build_cmd].any? { |x| x.include?("build_mlx_data.rb") }, "build command targets build_mlx_data"
@@ -91,6 +92,14 @@ Dir.mktmpdir("mlx_sandbox") do |sandbox|
   assert_equal 1, File.readlines(valid).size, "valid slice takes the next entry"
   first_msg = JSON.parse(File.readlines(train).first)["messages"]
   assert_equal %w[user assistant], first_msg.map { |m| m["role"] }, "MLX messages format"
+end
+
+# --- run_with_log tees output to a file ---
+Dir.mktmpdir("log_sandbox") do |d|
+  log = File.join(d, "train.log")
+  ok = run_with_log(["printf", "line one\nline two\n"], log)
+  assert ok, "run_with_log succeeds"
+  assert_equal "line one\nline two\n", File.read(log), "run_with_log tees all output to the log"
 end
 
 # --- missing training data: friendly failure, not a crash ---

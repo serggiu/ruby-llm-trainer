@@ -19,6 +19,7 @@
 # sandbox); the scripts/venv always come from this repository.
 
 require "rbconfig"
+require "fileutils"
 
 SCRIPTS = File.expand_path("..", __dir__) # this repository (scripts, .venv)
 ROOT = ENV["LLM_TRAINER_ROOT"] || SCRIPTS # where _dataset/, _mlx/ live
@@ -88,7 +89,27 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
     slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, model: model,
     watchdog: watchdog, dry_run: dry_run,
     lora: lora, build_cmd: build_cmd, run_cmd: run_cmd,
+    log_path: File.join(data_root, "_mlx", "train_#{slice}.log"),
   }
+end
+
+# Runs a command, streaming its output to the terminal AND appending it to a
+# log file (so progress can be checked later). Returns true on success.
+def run_with_log(cmd, log_path, env: {})
+  reader, writer = IO.pipe
+  pid = Process.spawn(env, *cmd, out: writer, err: writer)
+  writer.close
+
+  FileUtils.mkdir_p(File.dirname(log_path))
+  File.open(log_path, "w") do |log|
+    reader.each_line do |line|
+      puts line
+      log.write(line)
+      log.flush
+    end
+  end
+  Process.wait(pid)
+  $?.success?
 end
 
 if __FILE__ == $PROGRAM_NAME
@@ -117,7 +138,7 @@ if __FILE__ == $PROGRAM_NAME
 
   abort "slice build failed" unless system(*plan[:build_cmd])
 
-  env = plan[:watchdog] ? { "WATCHDOG" => "1" } : {}
-  ok = system(env, *plan[:run_cmd])
+  puts "log: #{plan[:log_path]}"
+  ok = run_with_log(plan[:run_cmd], plan[:log_path], env: plan[:watchdog] ? { "WATCHDOG" => "1" } : {})
   exit(ok ? 0 : 1)
 end
