@@ -118,3 +118,18 @@ diff /tmp/py_counts.txt /tmp/rb_counts.txt && echo "IDENTICAL: all 200 entries m
   templates are **not** replicated — tokenizing such messages will differ.
 - `"!"` genuinely maps to token id `0` in the Qwen3 vocab — an id of `0` in
   the output is correct, not a fallback.
+
+## Licensing & attribution
+
+- This tokenizer is an **original Ruby implementation** — no source code
+  from the HuggingFace `transformers` or `tokenizers` libraries is used or
+  copied (both are Apache-2.0 licensed anyway).
+- The **byte table** and the **pre-tokenization regex** are functionally
+  equivalent to those of OpenAI's GPT-2 (MIT license) — byte-level BPE
+  compatibility requires this exact mapping and pattern.
+- The BPE algorithm: Sennrich et al., "Neural Machine Translation of Rare
+  Words with Subword Units" (2016).
+- The **vocabulary and merge data** are loaded at runtime from the model's
+  own `tokenizer.json` (Qwen3 models: Apache-2.0) and are not redistributed.
+- The **chat-template output format** follows the model's
+  `tokenizer_config.json` (Qwen3: Apache-2.0).

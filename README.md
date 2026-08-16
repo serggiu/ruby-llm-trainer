@@ -416,6 +416,12 @@ conventions, test commands, and architectural guidance.
 
 This repository itself is **MIT licensed** — see [LICENSE](LICENSE).
 
+The tokenizer (`tools/tokenizer.rb`) is an original Ruby implementation with
+no copied HuggingFace code; its byte table and pre-tokenization regex are
+functionally equivalent to OpenAI's GPT-2 (MIT), and its vocabulary/merge
+data is loaded at runtime from the model's own `tokenizer.json` (Qwen3:
+Apache-2.0) — see the attribution section in [TOKENIZER.md](TOKENIZER.md).
+
 The context files and datasets can be derived from third-party open-source
 projects, each with its own license. Every repository under `_sources/` keeps
 its license file; each derived dataset carries the license of the repository
