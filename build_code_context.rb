@@ -182,21 +182,21 @@ def build_repo_jsonl(repo, files)
 
     # 1. Code reproduction entry
     pool = is_test ? TEST_PROMPTS : CODE_PROMPTS
-    entries << [format(pool[counter % pool.size], rel), code]
+    entries.concat(split_long_entries(format(pool[counter % pool.size], rel), code))
     counter += 1
 
     if is_test
       # 2. Test coverage entry
       coverage = build_coverage(rel, code)
       if coverage
-        entries << [format(COVERAGE_PROMPTS[counter % COVERAGE_PROMPTS.size], rel), coverage]
+        entries.concat(split_long_entries(format(COVERAGE_PROMPTS[counter % COVERAGE_PROMPTS.size], rel), coverage))
         counter += 1
       end
     else
       # 2. API explanation entry
       explanation = build_explanation(rel, code)
       if explanation
-        entries << [format(EXPLAIN_PROMPTS[counter % EXPLAIN_PROMPTS.size], rel), explanation]
+        entries.concat(split_long_entries(format(EXPLAIN_PROMPTS[counter % EXPLAIN_PROMPTS.size], rel), explanation))
         counter += 1
       end
     end

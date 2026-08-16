@@ -54,9 +54,11 @@ _dataset/_full_ruby_dataset.jsonl
 One ShareGPT-format conversation per line
 (`{"conversations": [{"from": "human", ...}, {"from": "gpt", ...}]}`), accepted
 out of the box by local fine-tuning pipelines such as **LLaMA-Factory**,
-**axolotl**, **Unsloth**, and `llama.cpp`'s finetune tooling. Currently
-~8,300 conversation pairs (~28 MB), covering every Ruby source file and guide
-in the configured repositories.
+**axolotl**, **Unsloth**, and `llama.cpp`'s finetune tooling — covering every
+Ruby source file and guide in the configured repositories. Every pair is
+capped at `MAX_CONTEXT_TOKENS` (2048 estimated tokens) — long files and
+chapters are split into as many "part i/n" pairs as needed, so nothing is
+truncated at training time.
 
 Each step can also be run individually — see the sections below.
 
@@ -120,7 +122,7 @@ Markdown dump plus one ShareGPT dataset per repository:
 | Output | Content |
 |---|---|
 | `code_context/<repo>.md` | agent-friendly source dump (file index + verbatim code) |
-| `_dataset/code_<repo>.jsonl` | training dataset: code reproduction, API explanation, test coverage |
+| `_dataset/code_<repo>.jsonl` | training dataset: code reproduction, API explanation, test coverage (long entries split into ≤2048-token parts) |
 
 Add any new repo to `_sources/` and re-run — it's picked up automatically;
 outputs for repos that are removed are cleaned up.
@@ -202,6 +204,16 @@ The original single-file converter: turns one code-context Markdown dump into
 a ShareGPT-format JSONL dataset (code reproduction, API explanation, test
 coverage). `build_code_context.rb` reuses its entry builders.
 
+**Context-length bounding**: every generated pair is capped at
+`MAX_CONTEXT_TOKENS` (2048, estimated at ~4 chars/token, including chat-
+template overhead) — answers longer than the cap (big source files, long
+guide chapters) are split into as many `(prompt, part i/n)` pairs as needed.
+This keeps the training data free of over-long contexts: nothing gets
+silently truncated at training time, and single-sample memory stays bounded
+(~14 GB peak for an 8B 4-bit model on MLX at 2048 tokens). The same rule
+applies to the code, docs, and SFT entry builders, and the cap is a single
+tunable constant.
+
 ```bash
 ruby build_dataset.rb                    # first dump found in code_context/
 ruby build_dataset.rb path/to/other.md path/to/out.jsonl
@@ -219,7 +231,7 @@ level). Duplicates are removed by content hash.
 ruby build_pretrain_corpus.rb            # → _pretrain/ruby_corpus.jsonl
 ```
 
-### `build_sft_pairs.rb` — task-oriented SFT set
+### `build_sft_pairs.rb` — task-oriented SFT (supervised fine-tuning) set
 
 Builds the **task-oriented SFT training set** on top of the existing datasets:
 

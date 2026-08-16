@@ -145,7 +145,7 @@ def docs_entries(guide)
   intro = sections.empty? ? guide[:body] : sections.first[:content]
   answer = [guide[:description].to_s.strip, intro.strip].reject(&:empty?).join("\n\n")
   unless answer.empty?
-    entries << [format(DOC_OVERVIEW_PROMPTS[counter % DOC_OVERVIEW_PROMPTS.size], guide[:title]), answer]
+    entries.concat(split_long_entries(format(DOC_OVERVIEW_PROMPTS[counter % DOC_OVERVIEW_PROMPTS.size], guide[:title]), answer))
     counter += 1
   end
 
@@ -157,7 +157,7 @@ def docs_entries(guide)
 
     human = format(DOC_CHAPTER_PROMPTS[counter % DOC_CHAPTER_PROMPTS.size], heading, guide[:title])
     counter += 1
-    entries << [human, "## #{heading}\n\n#{content}"]
+    entries.concat(split_long_entries(human, "## #{heading}\n\n#{content}"))
   end
 
   entries

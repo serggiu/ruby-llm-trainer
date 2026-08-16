@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Build the task-oriented SFT training set for fine-tuning a local LLM on
+# Build the task-oriented SFT (supervised fine-tuning) training set for fine-tuning a local LLM on
 # Ruby.
 #
 # The output (ShareGPT JSONL, same format as the other datasets) combines:
@@ -231,7 +231,7 @@ def build_method_entries(sections, counter)
               else        format(METHOD_PROMPTS[2], m[:signature], rel, m[:doc])
               end
       counter += 1
-      entries << [human, m[:body]]
+      entries.concat(split_long_entries(human, m[:body]))
     end
   end
   dedupe_by_answer(entries)
@@ -278,7 +278,7 @@ def build_test_entries(sections, counter)
               else        format(TEST_IMPL_PROMPTS[2], target, code)
               end
       counter += 1
-      entries << [human, impl]
+      entries.concat(split_long_entries(human, impl))
     rescue StandardError => e
       puts "  [warn] skipping test pair for #{rel}: #{e.class}: #{e.message}"
       next
@@ -347,7 +347,7 @@ def bug_fix_pairs_for(repo, repo_root)
               when 0 then format(BUG_PROMPTS[0], subject, before)
               else        format(BUG_PROMPTS[1], subject, before)
               end
-      pairs << [human, after]
+      pairs.concat(split_long_entries(human, after))
     rescue StandardError => e
       puts "  [warn] skipping bug-fix candidate in #{repo}: #{e.class}: #{e.message}"
     end
@@ -439,7 +439,7 @@ def build_guide_entries(counter)
     unless answer.empty?
       human = format(GUIDE_OVERVIEW_PROMPTS[counter % GUIDE_OVERVIEW_PROMPTS.size], guide[:title])
       counter += 1
-      entries << [human, answer]
+      entries.concat(split_long_entries(human, answer))
     end
 
     sections.drop(1).each do |section|
@@ -449,7 +449,7 @@ def build_guide_entries(counter)
 
       human = format(GUIDE_CHAPTER_PROMPTS[counter % GUIDE_CHAPTER_PROMPTS.size], heading, guide[:title])
       counter += 1
-      entries << [human, "## #{heading}\n\n#{content}"]
+      entries.concat(split_long_entries(human, "## #{heading}\n\n#{content}"))
     end
   end
 

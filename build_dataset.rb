@@ -15,6 +15,10 @@
 #                          comments and declarations in the file (lib files only)
 #   - test coverage      — the real `test "..."` descriptions (test files only)
 #
+# Every entry is capped at MAX_CONTEXT_TOKENS (2048 estimated tokens):
+# answers longer than the cap are split into as many "(part i/n)" pairs as
+# needed, so no generated pair exceeds the cap.
+#
 # Usage:
 #   ruby build_dataset.rb [input.md] [output.jsonl]
 #
@@ -247,6 +251,127 @@ end
 
 
 # ---------------------------------------------------------------------------
+# Context-length bounding: entries longer than MAX_CONTEXT_TOKENS are split
+# into as many pairs as needed so that no generated pair exceeds the cap.
+# ---------------------------------------------------------------------------
+
+# Hard cap on the estimated token length of any generated conversation pair.
+# 2048 keeps single-sample memory at ~14 GB peak for an 8B 4-bit model
+# (mlx-lm's quantized attention materializes O(n^2) attention scores), which
+# fits a 32 GB Mac with room to spare. Tunable — lower it for smaller
+# machines, raise it only if you know the memory math.
+MAX_CONTEXT_TOKENS = 2048
+
+# Chat-template overhead (system/role/turn special tokens) added by the
+# tokenizer on top of the raw prompt + answer text.
+CHAT_TEMPLATE_OVERHEAD_TOKENS = 64
+
+# Conservative chars-per-token factor used when deciding and sizing splits:
+# derived from the measured corpus floor of 1.62 chars/token (base64-encoded
+# CBOR in a WebAuthn test file); 1.4 keeps ~14% margin below that floor, so
+# generated pairs stay safely under MAX_CONTEXT_TOKENS with the real
+# tokenizer. Typical code is ~4.4 chars/token — the factor only bites on
+# pathological dense content.
+def split_chars_per_token
+  1.4
+end
+
+# Rough token estimate used for context bounding (see split_chars_per_token).
+def estimate_tokens(text)
+  (text.bytesize / split_chars_per_token).ceil
+end
+
+# Greedy line-based packing of +text+ into chunks of at most +max_tokens+
+# estimated tokens each. Lines are kept whole; a single over-long line
+# (minified code, ...) is hard-split by characters.
+def split_text_chunks(text, max_tokens)
+  return [] if text.empty?
+
+  max_chars = (max_tokens * split_chars_per_token).floor
+  chunks = []
+  current = +""
+  current_chars = 0
+
+  text.lines.each do |line|
+    line_chars = line.length
+
+    if !current.empty? && current_chars + line_chars > max_chars
+      chunks << current
+      current = +""
+      current_chars = 0
+    end
+
+    if line_chars > max_chars
+      chunks << current unless current.empty?
+      current = +""
+      current_chars = 0
+      offset = 0
+      while offset < line_chars
+        chunks << line[offset, max_chars]
+        offset += max_chars
+      end
+    else
+      current << line
+      current_chars += line_chars
+    end
+  end
+
+  chunks << current unless current.empty?
+  chunks
+end
+
+# Returns [[human, answer], ...] — the pair as-is when it fits under
+# MAX_CONTEXT_TOKENS (estimated, including chat-template overhead), otherwise
+# as many pairs as needed, each under the cap:
+#   - answer too long (the common case: verbatim code, long guide chapters):
+#     the answer is split; the prompt is repeated with a "part i/n" suffix
+#   - prompt too long (e.g. a huge test file as prompt): the prompt is split
+#     and each part is paired with the answer
+#   - both too long: both are split and paired part-by-part
+# Splitting is line-based, so code and markdown stay readable in each part.
+def split_long_entries(human, answer)
+  return [[human, answer]] if human.empty? || answer.empty?
+
+  if estimate_tokens("#{human}\n#{answer}") + CHAT_TEMPLATE_OVERHEAD_TOKENS <= MAX_CONTEXT_TOKENS
+    return [[human, answer]]
+  end
+
+  human_tokens = estimate_tokens(human)
+  answer_tokens = estimate_tokens(answer)
+
+  if answer_tokens <= MAX_CONTEXT_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS - 32
+    # Answer fits beside a chunked prompt: split the prompt to fit.
+    prompt_budget = MAX_CONTEXT_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS - answer_tokens - 16
+    parts = split_text_chunks(human, prompt_budget)
+    return [[human, answer]] if parts.empty?
+
+    n = parts.size
+    parts.each_with_index.map { |hp, i| ["#{hp} (part #{i + 1}/#{n})", answer] }
+  elsif human_tokens <= MAX_CONTEXT_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS - 32
+    # Prompt fits beside a chunked answer: split the answer.
+    answer_budget = MAX_CONTEXT_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS - human_tokens - 16
+    parts = split_text_chunks(answer, answer_budget)
+    return [[human, answer]] if parts.empty?
+
+    n = parts.size
+    parts.each_with_index.map { |ap, i| ["#{human} (part #{i + 1}/#{n})", ap] }
+  else
+    # Both long: split both and pair part-by-part.
+    budget = (MAX_CONTEXT_TOKENS - CHAT_TEMPLATE_OVERHEAD_TOKENS) / 2 - 16
+    human_parts = split_text_chunks(human, budget)
+    answer_parts = split_text_chunks(answer, budget)
+    return [[human, answer]] if human_parts.empty? || answer_parts.empty?
+
+    n = [human_parts.size, answer_parts.size].max
+    (0...n).map do |i|
+      hp = human_parts[[i, human_parts.size - 1].min]
+      ap = answer_parts[[i, answer_parts.size - 1].min]
+      ["#{hp} (part #{i + 1}/#{n})", ap]
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -266,7 +391,7 @@ def main
     prompt_pool = is_test ? TEST_PROMPTS : CODE_PROMPTS
     human = format(prompt_pool[counter % prompt_pool.size], path)
     counter += 1
-    entries << [human, code]
+    entries.concat(split_long_entries(human, code))
 
     # 2. API explanation entry (lib files only)
     unless is_test
@@ -274,7 +399,7 @@ def main
       if explanation
         human = format(EXPLAIN_PROMPTS[counter % EXPLAIN_PROMPTS.size], path)
         counter += 1
-        entries << [human, explanation]
+        entries.concat(split_long_entries(human, explanation))
       end
     end
 
@@ -284,7 +409,7 @@ def main
       if coverage
         human = format(COVERAGE_PROMPTS[counter % COVERAGE_PROMPTS.size], path)
         counter += 1
-        entries << [human, coverage]
+        entries.concat(split_long_entries(human, coverage))
       end
     end
   end

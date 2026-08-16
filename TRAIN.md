@@ -84,6 +84,18 @@ ruby build_sft_pairs.rb         # _dataset/sft_train_set.jsonl (task SFT set, Sh
 ruby build_mlx_data.rb 12000 1000   # _mlx/train.jsonl + _mlx/valid.jsonl (MLX chat format)
 ```
 
+All generated conversation pairs are capped at ~2048 tokens
+(`MAX_CONTEXT_TOKENS` in `build_dataset.rb`): long source files and guide
+chapters are split into as many `(part i/n)` pairs as needed, so nothing is
+truncated during training and memory stays bounded (~13-14 GB peak for an 8B
+4-bit model). Use `--max-seq-length 2048` (more only if you add unsplit
+data).
+
+`build_mlx_data.rb 12000 1000` writes `_mlx/train.jsonl` + `_mlx/valid.jsonl`
+and overwrites them each run. To keep several slices at once (smoke / test /
+full), pass the input file and output dir explicitly:
+`ruby build_mlx_data.rb 3000 200 _dataset/sft_train_set.jsonl _mlx/qwen3_proper`
+
 | File | Format | Used by |
 |---|---|---|
 | `_pretrain/ruby_corpus.jsonl` | `{"text": "..."}` per line | Stage 1 (CPT) — accepted by MLX as-is |
@@ -110,7 +122,7 @@ ruby build_mlx_data.rb 12000 1000   # _mlx/train.jsonl + _mlx/valid.jsonl (MLX c
   --learning-rate 1e-5 \
   --steps-per-report 50 \
   --steps-per-eval 250 \
-  --max-seq-len 2048
+  --max-seq-length 2048
 ```
 
 Notes:
@@ -121,8 +133,9 @@ Notes:
 - If your mlx-lm version rejects a single JSONL file, split
   `ruby_corpus.jsonl` into `train.jsonl`/`valid.jsonl` in a directory, like
   `_mlx`.
-- Expect several hours for the full corpus on a 3B; the smoke run (100
-  iters) takes ~10 minutes.
+- Expect roughly a few seconds per iteration on a 3B; the smoke run (100
+  iters) takes ~10 minutes. The full corpus takes however long the sources
+  require — it scales with the number of source files.
 
 ### Stage 2 — Task SFT (the main stage)
 
@@ -147,12 +160,16 @@ train SFT on top of that; otherwise start from the base model.
   --learning-rate 1e-5 \
   --steps-per-report 10 \
   --steps-per-eval 100 \
-  --max-seq-len 4096
+  --max-seq-length 2048
 ```
 
-Watch the output: `Train loss` and `Val loss` should decrease. Long code
-entries are truncated to `--max-seq-len` (the trainer warns); raise it if
-RAM allows, or pre-split the data.
+Watch the output: `Train loss` and `Val loss` should decrease. The generated
+data is pre-split at ~2048 tokens per pair, so with `--max-seq-length 2048`
+nothing gets truncated (a truncation warning means the flag is set below the
+data's needs, or you're using custom unsplit data). Don't raise the limit
+needlessly: on a 4-bit model, mlx-lm's quantized attention materializes O(n²)
+attention scores — at 4096 a validation pass spikes to ~40+ GB peak on an 8B,
+while 2048 stays at ~13-14 GB.
 
 ### Stage 3 — Use and evaluate the result
 
@@ -250,20 +267,20 @@ ruby build_mlx_data.rb 12000 1000
 .venv/bin/mlx_lm.lora --model Qwen/Qwen2.5-3B-Instruct --train \
   --data _pretrain/ruby_corpus.jsonl --adapter-path _mlx/adapters_cpt \
   --iters 1000 --batch-size 1 --learning-rate 1e-5 \
-  --steps-per-report 50 --steps-per-eval 250 --max-seq-len 2048
+  --steps-per-report 50 --steps-per-eval 250 --max-seq-length 2048
 
 # ---- stage 1 → 2 bridge (only if stage 1 ran) ----
-.venv/bin/mlx_lm.fuse --model Qwen/Qwen2.5-3B-Instruct \
+.venv/bin/mlx_lm.fuse --model Qwen/Qwen3-8B-MLX-4bit \
   --adapter-path _mlx/adapters_cpt --save-path _mlx/model_cpt
 
 # ---- stage 2: SFT ----
 .venv/bin/mlx_lm.lora --model _mlx/model_cpt --train \
   --data _mlx --adapter-path _mlx/adapters_sft \
   --iters 1000 --batch-size 1 --learning-rate 1e-5 \
-  --steps-per-report 10 --steps-per-eval 100 --max-seq-len 4096
+  --steps-per-report 10 --steps-per-eval 100 --max-seq-length 2048
 
 # ---- stage 3: use ----
-.venv/bin/mlx_lm.generate --model Qwen/Qwen2.5-3B-Instruct \
+.venv/bin/mlx_lm.generate --model Qwen/Qwen3-8B-MLX-4bit \
   --adapter-path _mlx/adapters_sft --max-tokens 300 \
   --prompt "Explain the difference between `include` and `prepend` in Ruby modules?"
 
@@ -316,7 +333,7 @@ ruby-trainer/
 | `--batch-size` | 1 for small data; raise only if RAM allows |
 | `--learning-rate` | 1e-5 is a safe default for this kind of data |
 | `--steps-per-report` / `--steps-per-eval` | Logging / validation frequency |
-| `--max-seq-len` | Truncation length (long code entries need 4096+) |
+| `--max-seq-length` | Truncation length — 2048 is enough with the pre-split data |
 | `--save-every` | Adapter checkpoint frequency (default 100) |
 
 ### Troubleshooting
@@ -324,10 +341,10 @@ ruby-trainer/
 | Symptom | Fix |
 |---|---|
 | `mlx` has no `__version__` | Use `importlib.metadata.version('mlx')` for the version check |
-| "Some sequences are longer than N tokens" | Warning only — raise `--max-seq-len` or pre-split long entries |
+| "Some sequences are longer than N tokens" | Shouldn't happen with the pre-split data — only if you set `--max-seq-length` below 2048 or use custom data |
 | Pip refuses to install (externally-managed) | Use the venv (`python3 -m venv .venv`) — never install into system Python |
 | Training is slow | Normal: ~150-180 tokens/sec on a 3B on Apple Silicon; drop `--steps-per-eval` frequency |
-| Out of memory | Reduce `--max-seq-len`, `--batch-size`, or use a 4-bit quantization config for bigger models |
+| Out of memory | Reduce `--max-seq-length`, `--batch-size`, or use a 4-bit quantization config for bigger models |
 | Model re-downloads every run | It shouldn't — files live in `~/.cache/huggingface/hub/`; check free disk space |
 | Wrong chat behavior after training | The chat template must match the model's — prefer `messages`-format data (as `build_mlx_data.rb` produces) |
 
