@@ -27,7 +27,7 @@ works; ones without `.rb` files are simply skipped.
 ## Run everything (`bin/build`)
 
 One command regenerates the whole training corpus — docs context, code
-context, datasets, attribution, pretrain corpus, and the SFT set:
+context, datasets, attribution, pretrain corpus, and the SFT (supervised fine-tuning) set:
 
 ```bash
 ruby bin/build                  # full pipeline
