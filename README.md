@@ -35,14 +35,22 @@ ruby bin/build --skip-bugs      # skip the (slower) git-history bug mining
 ```
 
 It calls the orchestrator `build/main.rb`, then builds the pretrain corpus
-and the SFT set. The steps, in order: `build_docs_context.rb` →
-`build_code_context.rb` → `create_dataset.rb` → `build_attribution.rb` →
-`build_pretrain_corpus.rb` → `build_sft_pairs.rb` (each can also be run
-individually — see below).
+and the SFT set. The steps, in order:
+
+1. `build_docs_context.rb` — Ruby docs and guides
+2. `build_code_context.rb` — Ruby source code
+3. `create_dataset.rb` — the main dataset
+4. `build_attribution.rb` — repo/file attribution
+5. `build_pretrain_corpus.rb` — the pretrain corpus
+6. `build_sft_pairs.rb` — the SFT pairs
+
+Each script can also be run individually — see below.
 
 When it finishes, the training file is `_dataset/_full_ruby_dataset.jsonl`:
 one ShareGPT conversation per line, covering every Ruby source file and
-guide in the configured repositories. Every pair is capped at
+guide in the configured repositories. 
+
+Every pair is capped at
 `MAX_CONTEXT_TOKENS` (2048 estimated tokens) — long files and chapters are
 split into as many "part i/n" pairs as needed, so nothing is truncated at
 training time.
@@ -59,9 +67,14 @@ ruby bin/train --watchdog                   # supervised by the memory watchdog
 ruby bin/train --dry-run                    # print the commands, don't run
 ```
 
-Options: `--iters N` (default 1000), `--slice smoke|proper|full` (300/50,
-3000/200, 20000/700), `--adapter DIR` (default `_mlx/adapters_qwen3`),
-`--watchdog`, `--model DIR` (default: the Qwen3-8B MLX cache).
+Options:
+
+- `--iters N` — training iterations (default 1000)
+- `--slice smoke|proper|full` — data slice (300/50, 3000/200, 20000/700)
+- `--adapter DIR` — adapter output dir (default `_mlx/adapters_qwen3`)
+- `--watchdog` — supervise the run with the memory watchdog (WATCHDOG=1)
+- `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
+- `--dry-run` — print the commands without running them
 
 `bin/train` needs the SFT set produced by the build step — if it's missing
 (e.g. you haven't run `bin/build` yet), it fails with a message telling you
