@@ -6,12 +6,13 @@
 #
 # Usage:
 #   ruby bin/train [--iters 1000] [--slice proper|smoke|full] [--adapter DIR]
-#                  [--watchdog] [--model DIR] [--dry-run]
+#                  [--watchdog] [--resume] [--model DIR] [--dry-run]
 #
 #   --iters N       training iterations (default 1000)
 #   --slice NAME    data slice: smoke (300/50), proper (3000/200), full (20000/700)
 #   --adapter DIR   adapter output dir (default _mlx/adapters_qwen3)
 #   --watchdog      supervise the run with the memory watchdog (WATCHDOG=1)
+#   --resume        continue from the latest adapter checkpoint instead of a fresh run
 #   --model DIR     model directory (default: the Qwen3-8B MLX cache)
 #   --dry-run       print the commands without running them
 #
@@ -42,6 +43,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
   slice = "proper"
   adapter = "_mlx/adapters_qwen3"
   watchdog = false
+  resume = false
   dry_run = false
   model = nil
 
@@ -54,6 +56,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
     when "--adapter"  then adapter = args.shift
     when "--model"    then model = args.shift
     when "--watchdog" then watchdog = true
+    when "--resume"   then resume = true
     when "--dry-run"  then dry_run = true
     else raise ArgumentError, "unknown option: #{opt}"
     end
@@ -82,12 +85,17 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
                "--iters", iters.to_s, "--batch-size", "1", "--learning-rate", "1e-5",
                "--steps-per-report", "20", "--steps-per-eval", "200",
                "--val-batches", "10", "--max-seq-length", "2048"]
+  resume_file = nil
+  if resume
+    resume_file = File.join(data_root, adapter, "adapters.safetensors")
+    train_cmd += ["--resume-adapter-file", resume_file]
+  end
   run_cmd = [RUBY, File.join(scripts, "tools", "run_capped.rb"), "--", *train_cmd]
 
   {
     iters: iters, slice: slice, train_count: train_count, valid_count: valid_count,
     slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, model: model,
-    watchdog: watchdog, dry_run: dry_run,
+    watchdog: watchdog, resume: resume, resume_file: resume_file, dry_run: dry_run,
     lora: lora, build_cmd: build_cmd, run_cmd: run_cmd,
     log_path: File.join(data_root, "_mlx", "train_#{slice}.log"),
   }
@@ -95,13 +103,14 @@ end
 
 # Runs a command, streaming its output to the terminal AND appending it to a
 # log file (so progress can be checked later). Returns true on success.
-def run_with_log(cmd, log_path, env: {})
+# With append: true the log keeps previous content (used when resuming).
+def run_with_log(cmd, log_path, env: {}, append: false)
   reader, writer = IO.pipe
   pid = Process.spawn(env, *cmd, out: writer, err: writer)
   writer.close
 
   FileUtils.mkdir_p(File.dirname(log_path))
-  File.open(log_path, "w") do |log|
+  File.open(log_path, append ? "a" : "w") do |log|
     reader.each_line do |line|
       puts line
       log.write(line)
@@ -124,6 +133,13 @@ if __FILE__ == $PROGRAM_NAME
           "Run `ruby bin/build` first to generate the SFT set, then retry."
   end
 
+  if plan[:resume]
+    unless File.file?(plan[:resume_file])
+      abort "No checkpoint to resume from: #{plan[:resume_file]}\n" \
+            "Run `ruby bin/train` once without --resume to create it, then retry."
+    end
+  end
+
   abort ".venv not found — follow TRAIN.md setup first" unless File.exist?(plan[:lora])
 
   puts "slice:   qwen3_#{plan[:slice]} (#{plan[:train_count]} train / #{plan[:valid_count]} valid)"
@@ -131,6 +147,7 @@ if __FILE__ == $PROGRAM_NAME
   puts "adapter: #{plan[:adapter]}"
   puts "model:   #{plan[:model]}"
   puts "watchdog: #{plan[:watchdog] ? 'on' : 'off'}"
+  puts "resume:  #{plan[:resume] ? "on (#{plan[:resume_file]})" : 'off'}"
   puts
   puts "$ #{plan[:build_cmd].join(' ')}"
   puts "$ #{plan[:run_cmd].join(' ')}"
@@ -139,6 +156,8 @@ if __FILE__ == $PROGRAM_NAME
   abort "slice build failed" unless system(*plan[:build_cmd])
 
   puts "log: #{plan[:log_path]}"
-  ok = run_with_log(plan[:run_cmd], plan[:log_path], env: plan[:watchdog] ? { "WATCHDOG" => "1" } : {})
+  ok = run_with_log(plan[:run_cmd], plan[:log_path],
+                    env: plan[:watchdog] ? { "WATCHDOG" => "1" } : {},
+                    append: plan[:resume])
   exit(ok ? 0 : 1)
 end

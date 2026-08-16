@@ -73,8 +73,12 @@ Options:
 - `--slice smoke|proper|full` — data slice (300/50, 3000/200, 20000/700)
 - `--adapter DIR` — adapter output dir (default `_mlx/adapters_qwen3`)
 - `--watchdog` — supervise the run with the memory watchdog (WATCHDOG=1)
+- `--resume` — continue from the latest adapter checkpoint instead of a fresh run
 - `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
 - `--dry-run` — print the commands without running them
+
+Sessions can be chained with `--resume` (stop, continue later), but a single
+long run is usually better — see [Resuming a run](TRAIN.md#resuming-a-run--and-why-one-long-run-beats-several-chained-ones) in [TRAIN.md](TRAIN.md).
 
 `bin/train` needs the SFT set produced by the build step — if it's missing
 (e.g. you haven't run `bin/build` yet), it fails with a message telling you
@@ -85,6 +89,66 @@ SFT, evaluate the result), follow [TRAIN.md](TRAIN.md).
 
 Training summary by DeepSeek V4 Flash:
 > The model is not a student being quizzed and corrected — it's a parrot being shown thousands of correct transcripts and learning to continue them.
+
+## Check the trained model
+
+Before exporting, decide whether the adapter is good enough. Chat with the base
+model and with the adapter on the same prompts, using the same seed so the
+outputs are directly comparable:
+
+```bash
+# Base model (no adapter):
+.venv/bin/mlx_lm.generate \
+  --model <model-dir> \
+  --seed 42 --max-tokens 300 --use-default-chat-template \
+  --prompt "Explain the difference between `include` and `prepend` in Ruby modules?"
+
+# Trained adapter on top of the same model:
+.venv/bin/mlx_lm.generate \
+  --model <model-dir> \
+  --adapter-path _mlx/adapters_qwen3 \
+  --seed 42 --max-tokens 300 --use-default-chat-template \
+  --prompt "Explain the difference between `include` and `prepend` in Ruby modules?"
+```
+
+`<model-dir>` is the model you trained with — by default the Qwen3-8B MLX
+cache under `~/.cache/huggingface/hub/`. Try a handful of Ruby questions plus
+one general question. The adapter is **good enough** when:
+
+- it answers the Ruby questions correctly and directly — the base model often
+  stalls in its thinking mode instead;
+- it answers in one pass, without trailing `<think>` rambling;
+- it still chats normally on the general question (no regression).
+
+If it's not good enough, train more (`ruby bin/train --iters N` — longer runs
+see more of the dataset) before exporting.
+
+## Export the trained model (`bin/export`)
+
+Once the adapter is good enough, export it as a new standalone model — the
+result needs no base snapshot afterwards:
+
+```bash
+ruby bin/export                       # export the latest adapter
+ruby bin/export --checkpoint 2500     # export a specific training checkpoint
+ruby bin/export --dequantize          # export fp16 instead of keeping 4-bit
+ruby bin/export --dry-run             # print the commands, don't run
+```
+
+Options:
+
+- `--adapter DIR` — adapter dir to export (default `_mlx/adapters_qwen3`)
+- `--checkpoint N` — export checkpoint N instead of the latest adapter
+- `--out DIR` — output dir (default `_mlx/model_qwen3_export`)
+- `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
+- `--dequantize` — export fp16 weights (default keeps the base's 4-bit)
+- `--dry-run` — print the commands without running them
+
+The exported model keeps the base quantization (4-bit) by default, so it stays
+about the size of the base snapshot; `--dequantize` roughly doubles it. The
+write is atomic: if the export fails, the previous exported model is left
+intact. `bin/export` needs a trained adapter — if it's missing, it tells you
+to run `ruby bin/train` first.
 
 ## Training recommendation
 
@@ -286,7 +350,7 @@ ruby bin/test            # runs every test/test_*.rb; exits non-zero on failure
 Six test files cover the splitting logic, the tokenizer (mechanics always,
 golden token-ID tests when a model directory is available — auto-detected
 from the Qwen3-8B MLX cache, or `ruby bin/test --model DIR`), the two
-diagnostic tools, and the build/train commands (run against an in-memory
+diagnostic tools, and the build/train/export commands (run against an in-memory
 sandbox — no model or network needed).
 
 ---
@@ -322,6 +386,7 @@ conventions, test commands, and architectural guidance.
 ├── TRAIN.md                    ← Step-by-step local model training (MLX)
 ├── bin/build                   ← One-shot data pipeline (docs + code + datasets + SFT)
 ├── bin/train                   ← Rebuild slice + run LoRA training
+├── bin/export                   ← Export the trained adapter as a standalone model
 ├── bin/test                    ← Runs all tests (test/test_*.rb)
 ├── build/                      ← Pipeline scripts: main.rb + build_*.rb + create_dataset.rb
 ├── test/                       ← Tests: split logic + tokenizer golden values

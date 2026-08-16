@@ -21,13 +21,19 @@ def assert_equal(expected, actual, label = nil)
   assert(expected == actual, label || "expected #{expected.inspect}, got #{actual.inspect}")
 end
 
+def assert_nil(value, label = "expected nil, got #{value.inspect}")
+  assert(value.nil?, label)
+end
+
 def assert_raises(error_class, label = "raises #{error_class}")
   $assertions += 1
   yield
   $failures += 1
   puts "  FAIL: #{label} — nothing raised"
-rescue error_class
-  # expected
+  nil
+rescue error_class => e
+  # expected — return the exception so callers can inspect it
+  e
 end
 
 # Runs the block with stdout/stderr silenced — for calls that intentionally

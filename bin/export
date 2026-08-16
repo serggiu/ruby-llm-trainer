@@ -1,0 +1,168 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Exports the trained LoRA adapter as a new standalone model: fuses the
+# adapter weights into the base model, so the result can be used (or
+# quantized) on its own — no base snapshot + adapter combo needed afterwards.
+#
+# The exported model keeps the base's quantization by default (e.g. 4-bit),
+# so it stays about the size of the base snapshot. Pass --dequantize for an
+# fp16 export instead.
+#
+# The write is atomic: fusing goes to a temporary directory, and only on
+# success does the temp dir replace the previous export — a failed export
+# never destroys the last good model.
+#
+# Usage:
+#   ruby bin/export [--adapter DIR] [--checkpoint N] [--out DIR] [--model DIR]
+#                   [--dequantize] [--dry-run]
+#
+#   --adapter DIR   adapter dir to export (default _mlx/adapters_qwen3)
+#   --checkpoint N  export checkpoint N (e.g. 2500) instead of the latest adapter
+#   --out DIR       output dir (default _mlx/model_qwen3_export)
+#   --model DIR     model directory (default: the Qwen3-8B MLX cache)
+#   --dequantize    export fp16 weights instead of the base quantization
+#   --dry-run       print the commands without running them
+#
+# Data root: LLM_TRAINER_ROOT env override (used by tests to run in a
+# sandbox); the scripts/venv always come from this repository.
+
+require "rbconfig"
+require "fileutils"
+require "tmpdir"
+
+SCRIPTS = File.expand_path("..", __dir__) # this repository (scripts, .venv)
+ROOT = ENV["LLM_TRAINER_ROOT"] || SCRIPTS # where _dataset/, _mlx/ live
+RUBY = RbConfig.ruby
+
+DEFAULT_MODEL_CACHE = File.expand_path(
+  "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
+)
+
+# Parses ARGV and builds the plan. Raises ArgumentError on bad input.
+# Returns a hash with the adapter/command details (see test/test_export.rb).
+def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE)
+  adapter = "_mlx/adapters_qwen3"
+  out = "_mlx/model_qwen3_export"
+  checkpoint = nil
+  dequantize = false
+  dry_run = false
+  model = nil
+
+  args = argv.dup
+  until args.empty?
+    opt = args.shift
+    case opt
+    when "--adapter"    then adapter = args.shift
+    when "--checkpoint" then checkpoint = Integer(args.shift)
+    when "--out"        then out = args.shift
+    when "--model"      then model = args.shift
+    when "--dequantize" then dequantize = true
+    when "--dry-run"    then dry_run = true
+    else raise ArgumentError, "unknown option: #{opt}"
+    end
+  end
+
+  model ||= ENV["TOKENIZER_MODEL_DIR"]
+  if model.nil? || model.empty?
+    cached = Dir.glob(model_cache_glob).first
+    raise ArgumentError, "no model found — pass --model DIR" if cached.nil?
+    model = File.dirname(cached)
+  end
+
+  adapter_dir = File.join(data_root, adapter)
+  out_dir = File.join(data_root, out)
+
+  fuse = File.join(scripts, ".venv", "bin", "mlx_lm.fuse")
+  fuse_cmd = [fuse, "--model", model, "--adapter-path", adapter_dir,
+              "--save-path", out_dir]
+  fuse_cmd << "--dequantize" if dequantize
+
+  {
+    adapter: adapter, adapter_dir: adapter_dir, out: out, out_dir: out_dir,
+    checkpoint: checkpoint, dequantize: dequantize, dry_run: dry_run,
+    model: model, fuse: fuse, fuse_cmd: fuse_cmd,
+    log_path: File.join(data_root, "_mlx", "export.log"),
+  }
+end
+
+# Returns the adapter dir to fuse: the adapter dir itself, or — when a
+# checkpoint is requested — a temporary dir holding that checkpoint copied as
+# adapters.safetensors (mlx_lm.fuse only reads adapters.safetensors) plus the
+# adapter config. Raises ArgumentError if the checkpoint is missing.
+def checkpoint_adapter_dir(adapter_dir, checkpoint, tmp_root = Dir.tmpdir)
+  src = File.join(adapter_dir, format("%07d_adapters.safetensors", checkpoint))
+  unless File.file?(src)
+    available = Dir.glob(File.join(adapter_dir, "*_adapters.safetensors"))
+                  .map { |f| f[/\d+(?=_adapters\.safetensors\z)/] }
+                  .compact.sort
+    raise ArgumentError, "checkpoint #{checkpoint} not found in #{adapter_dir}" \
+          "#{available.empty? ? '' : " (available: #{available.join(', ')})"}"
+  end
+
+  tmp = Dir.mktmpdir("export_adapter", tmp_root)
+  FileUtils.cp(src, File.join(tmp, "adapters.safetensors"))
+  cfg = File.join(adapter_dir, "adapter_config.json")
+  FileUtils.cp(cfg, File.join(tmp, "adapter_config.json")) if File.file?(cfg)
+  tmp
+end
+
+# Runs a command, streaming its output to the terminal AND appending it to a
+# log file (so progress can be checked later). Returns true on success.
+def run_with_log(cmd, log_path, env: {})
+  reader, writer = IO.pipe
+  pid = Process.spawn(env, *cmd, out: writer, err: writer)
+  writer.close
+
+  FileUtils.mkdir_p(File.dirname(log_path))
+  File.open(log_path, "w") do |log|
+    reader.each_line do |line|
+      puts line
+      log.write(line)
+      log.flush
+    end
+  end
+  Process.wait(pid)
+  $?.success?
+end
+
+if __FILE__ == $PROGRAM_NAME
+  begin
+    plan = build_plan(ARGV, scripts: SCRIPTS, data_root: ROOT)
+  rescue ArgumentError => e
+    abort e.message
+  end
+
+  abort ".venv not found — follow TRAIN.md setup first" unless File.exist?(plan[:fuse])
+
+  unless File.directory?(plan[:adapter_dir])
+    abort "Adapter not found: #{plan[:adapter_dir]}\n" \
+          "Run `ruby bin/train` first to train one, then retry."
+  end
+
+  puts "adapter:    #{plan[:adapter]}"
+  puts "checkpoint: #{plan[:checkpoint] || 'latest'}"
+  puts "out:        #{plan[:out]}"
+  puts "model:      #{plan[:model]}"
+  puts "dequantize: #{plan[:dequantize] ? 'yes (fp16)' : 'no (keeps base quantization)'}"
+  puts
+  puts "$ #{plan[:fuse_cmd].join(' ')}"
+  exit 0 if plan[:dry_run]
+
+  cmd = plan[:fuse_cmd].dup
+  tmp_out = "#{plan[:out_dir]}.tmp"
+  FileUtils.rm_rf(tmp_out)
+  cmd[cmd.index("--save-path") + 1] = tmp_out
+
+  puts "log: #{plan[:log_path]}"
+  ok = run_with_log(cmd, plan[:log_path])
+
+  unless ok
+    puts "export FAILED — previous model at #{plan[:out_dir]} left intact (partial output at #{tmp_out})"
+    exit 1
+  end
+
+  FileUtils.rm_rf(plan[:out_dir])
+  File.rename(tmp_out, plan[:out_dir])
+  puts "Exported #{plan[:adapter]} into #{plan[:out_dir]} (standalone, no base needed)"
+end

@@ -30,6 +30,7 @@ assert p[:slice_dir].end_with?("_mlx/qwen3_proper"), "slice dir under the data r
 assert p[:sft_set].end_with?("_dataset/sft_train_set.jsonl"), "sft set under the data root"
 assert p[:log_path].end_with?("_mlx/train_proper.log"), "log path under the data root, named by slice"
 assert_equal false, p[:watchdog], "watchdog off by default"
+assert_equal false, p[:resume], "resume off by default"
 assert_equal false, p[:dry_run], "dry-run off by default"
 assert p[:build_cmd].any? { |x| x.include?("build_mlx_data.rb") }, "build command targets build_mlx_data"
 assert p[:build_cmd].include?("3000") && p[:build_cmd].include?("200"), "build command carries the counts"
@@ -41,14 +42,17 @@ assert p[:run_cmd].include?("--val-batches") && p[:run_cmd].include?("10"), "eva
 
 # --- flags ---
 p2 = plan_for("--model", MODEL, "--iters", "500", "--slice", "full",
-              "--adapter", "_mlx/my_adapter", "--watchdog", "--dry-run")
+              "--adapter", "_mlx/my_adapter", "--watchdog", "--resume", "--dry-run")
 assert_equal 500, p2[:iters], "--iters parsed"
 assert_equal "full", p2[:slice], "--slice parsed"
 assert_equal [20_000, 700], [p2[:train_count], p2[:valid_count]], "full slice sizes"
 assert_equal "_mlx/my_adapter", p2[:adapter], "--adapter parsed"
 assert_equal true, p2[:watchdog], "--watchdog parsed"
+assert_equal true, p2[:resume], "--resume parsed"
 assert_equal true, p2[:dry_run], "--dry-run parsed"
 assert p2[:run_cmd].include?("--iters") && p2[:run_cmd].include?("500"), "iters in the command"
+assert p2[:run_cmd].include?("--resume-adapter-file"), "resume flag in the command"
+assert p2[:resume_file].end_with?("_mlx/my_adapter/adapters.safetensors"), "resume targets the adapter checkpoint"
 
 # --- errors (clear TOKENIZER_MODEL_DIR so the fallbacks are exercised) ---
 old_env = ENV["TOKENIZER_MODEL_DIR"]
@@ -102,6 +106,15 @@ Dir.mktmpdir("log_sandbox") do |d|
   assert_equal "line one\nline two\n", File.read(log), "run_with_log tees all output to the log"
 end
 
+# --- run_with_log append mode keeps previous content (resume sessions) ---
+Dir.mktmpdir("log_sandbox_append") do |d|
+  log = File.join(d, "train.log")
+  File.write(log, "old session\n")
+  ok = run_with_log(["printf", "new session\n"], log, append: true)
+  assert ok, "run_with_log append succeeds"
+  assert_equal "old session\nnew session\n", File.read(log), "append keeps previous session's log"
+end
+
 # --- missing training data: friendly failure, not a crash ---
 Dir.mktmpdir("empty_sandbox") do |sandbox|
   env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
@@ -128,4 +141,34 @@ Dir.mktmpdir("ready_sandbox") do |sandbox|
   ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
               "--dry-run", "--model", MODEL, out: File::NULL, err: File::NULL)
   assert ok, "bin/train --dry-run succeeds when the training data exists"
+end
+
+# --- --resume with no checkpoint: friendly failure, not a crash ---
+Dir.mktmpdir("no_resume_sandbox") do |sandbox|
+  dataset = File.join(sandbox, "_dataset")
+  FileUtils.mkdir_p(dataset)
+  File.write(File.join(dataset, "sft_train_set.jsonl"), "{}\n")
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  out = IO.popen([env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+                  "--dry-run", "--resume", "--model", MODEL], err: [:child, :out], &:read)
+  status = $?
+  assert !status.success?, "bin/train --resume exits non-zero when no checkpoint exists"
+  assert out.include?("No checkpoint to resume from"), "error names the missing checkpoint"
+  assert out.include?("adapters.safetensors"), "error names the checkpoint file"
+  assert out.include?("ruby bin/train"), "error tells the user to run bin/train first"
+  assert !out.include?("Errno"), "no raw exception leaks to the user"
+end
+
+# --- --resume with a checkpoint present, dry-run succeeds ---
+Dir.mktmpdir("resume_ready_sandbox") do |sandbox|
+  dataset = File.join(sandbox, "_dataset")
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(dataset)
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(dataset, "sft_train_set.jsonl"), "{}\n")
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "weights")
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+              "--dry-run", "--resume", "--model", MODEL, out: File::NULL, err: File::NULL)
+  assert ok, "bin/train --resume --dry-run succeeds when a checkpoint exists"
 end

@@ -171,6 +171,34 @@ needlessly: on a 4-bit model, mlx-lm's quantized attention materializes O(n²)
 attention scores — at 4096 a validation pass spikes to ~40+ GB peak on an 8B,
 while 2048 stays at ~13-14 GB.
 
+#### Resuming a run — and why one long run beats several chained ones
+
+Training can be split into several sessions: run some iterations, stop
+(close the terminal, power off, ...), then continue where you left off. The
+easiest way is `ruby bin/train --resume` (same flags as the original run),
+which loads the latest adapter checkpoint before training; the manual
+equivalent is adding `--resume-adapter-file _mlx/adapters_sft/adapters.safetensors`
+to the `mlx_lm.lora` command above. Checkpoints are saved every 100 iters, so
+a stopped run never loses more than a few minutes of work.
+
+Prefer one long run over chained sessions whenever you can, for two reasons:
+
+- **The optimizer state is not saved.** Resuming reloads only the adapter
+  *weights*; Adam's momentum starts from zero again, so each resumed session
+  begins with a small loss bump while the optimizer re-converges. At a low
+  learning rate (1e-5) this is mild, but it still costs a bit of progress
+  per session.
+- **Data coverage.** Each session samples a random subset of the training
+  set — no repeats within a session, but no memory across sessions either.
+  With 20k examples, one run of 20k iterations sees **every example exactly
+  once**; four chained runs of 5k iterations each see only ~63% of the
+  examples at least once (the rest are never seen, some are seen twice). If
+  covering the whole dataset matters, train in one go (`--iters 20000`).
+
+Use chained sessions when you need to pause — e.g. to free the machine
+overnight — and accept the coverage tradeoff, or resume a run that was
+interrupted for any reason.
+
 ### Stage 3 — Use and evaluate the result
 
 ```bash
@@ -187,6 +215,10 @@ while 2048 stays at ~13-14 GB.
   --adapter-path _mlx/adapters_sft \
   --save-path _mlx/model_sft
 ```
+
+(This repo's one-command shortcut is `ruby bin/export` — fuses the latest
+adapter into `_mlx/model_qwen3_export`, keeps the base's quantization, and
+writes atomically; see the README.)
 
 **Evaluation checklist** (before vs after, same prompts/seed):
 
