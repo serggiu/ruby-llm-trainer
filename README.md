@@ -11,7 +11,7 @@
 A small pipeline that turns any Ruby repositories placed under `_sources/`
 into:
 
-1. clean, agent-friendly Markdown context files
+1. clean, agent-friendly Markdown context files that can be used as a local Ruby specific skill
 2. a training dataset for local LLMs
 
 The generated Markdown files can be used as a Ruby or Ruby on Rails skill for
