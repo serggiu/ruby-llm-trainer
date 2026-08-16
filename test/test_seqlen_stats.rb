@@ -25,7 +25,7 @@ SHORT = entry("e", "f" * 200) # est = 145 + 64 = 209
 BAD = "{bad"
 
 # --- estimator mode ---
-lens, bad = collect_lengths([LONG, MID, SHORT, BAD, ""], tokenizer: nil)
+lens, bad = quietly { collect_lengths([LONG, MID, SHORT, BAD, ""], tokenizer: nil) }
 assert_equal 3, lens.size, "bad and empty lines excluded from lengths"
 assert_equal 1, bad, "one malformed line counted as skipped"
 

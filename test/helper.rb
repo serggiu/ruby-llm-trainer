@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "stringio"
+
 # Minimal assertion helpers shared by test/test_*.rb. A failing assertion is
 # counted and printed; the process exits non-zero if any assertion failed
 # (checked via at_exit), so bin/test can rely on the exit status.
@@ -26,6 +28,16 @@ def assert_raises(error_class, label = "raises #{error_class}")
   puts "  FAIL: #{label} — nothing raised"
 rescue error_class
   # expected
+end
+
+# Runs the block with stdout/stderr silenced — for calls that intentionally
+# produce warnings (e.g. tests of malformed-input handling).
+def quietly
+  orig_out, orig_err = $stdout, $stderr
+  $stdout = $stderr = StringIO.new
+  yield
+ensure
+  $stdout, $stderr = orig_out, orig_err
 end
 
 at_exit do

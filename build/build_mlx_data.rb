@@ -3,7 +3,7 @@
 
 # Data root — where _sources/, _dataset/, etc. live. Override with
 # LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
-ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__)) unless defined?(ROOT)
 
 # Convert the ShareGPT-format SFT set into MLX training data and slice it.
 #

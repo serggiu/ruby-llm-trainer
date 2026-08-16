@@ -15,58 +15,37 @@ into:
 2. a training dataset for local LLMs
 
 The generated Markdown files can be used as a Ruby or Ruby on Rails skill for
-your local agents.
+your local agents. The datasets are plain ShareGPT JSONL, so they work with
+any fine-tuning pipeline — **MLX** locally (see [TRAIN.md](TRAIN.md)),
+LLaMA-Factory, axolotl, Unsloth, ...
 
-If you want to go one step further, the datasets can be used to train local
-LLMs — on Apple's **MLX** framework (see [TRAIN.md](TRAIN.md)). The datasets
-are plain ShareGPT JSONL, so they also work with any other fine-tuning
-pipeline (LLaMA-Factory, axolotl, Unsloth, ...).
-
-As source code, you can use private repositories or any open-source Ruby
-libraries you consider to be good quality code (for example MIT-licensed).
-Clone them as git repositories into `_sources/` — the scripts run `git pull`
-in each folder so you always build from the latest version (a failed pull is
-only a warning).
-
-Any repo works; ones without `.rb` files are simply skipped.
+Clone any Ruby repositories (private or open-source) into `_sources/` — the
+scripts run `git pull` in each folder (a failed pull only warns and continues
+with what's on disk), so you always build from the latest version. Any repo
+works; ones without `.rb` files are simply skipped.
 
 ## Run everything (`bin/build`)
 
-The one-shot pipeline (`bin/build` calls the orchestrator `build/main.rb`, then
-builds the pretraining corpus and the SFT set). It pulls the latest sources,
-rebuilds the code and docs context, and regenerates the whole training
-corpus:
+One command regenerates the whole training corpus — docs context, code
+context, datasets, attribution, pretrain corpus, and the SFT set:
 
 ```bash
 ruby bin/build                  # full pipeline
 ruby bin/build --skip-bugs      # skip the (slower) git-history bug mining
 ```
 
-That runs, in order:
+It calls the orchestrator `build/main.rb`, then builds the pretrain corpus
+and the SFT set. The steps, in order: `build_docs_context.rb` →
+`build_code_context.rb` → `create_dataset.rb` → `build_attribution.rb` →
+`build_pretrain_corpus.rb` → `build_sft_pairs.rb` (each can also be run
+individually — see below).
 
-1. `build_docs_context.rb` — `git pull` every repo under `_sources/`, rebuild `docs_context/`
-2. `build_code_context.rb` — `git pull` every repo under `_sources/`, rebuild `code_context/`
-3. `create_dataset.rb` — rebuild every dataset and concatenate them all
-4. `build_attribution.rb` — regenerate `Attribution.md`
-5. `build_pretrain_corpus.rb` — rebuild `_pretrain/ruby_corpus.jsonl` (CPT data)
-6. `build_sft_pairs.rb` — rebuild `_dataset/sft_train_set.jsonl` (task SFT set)
-
-When it finishes, the final training file is:
-
-```
-_dataset/_full_ruby_dataset.jsonl
-```
-
-One ShareGPT-format conversation per line
-(`{"conversations": [{"from": "human", ...}, {"from": "gpt", ...}]}`), accepted
-out of the box by local fine-tuning pipelines such as **LLaMA-Factory**,
-**axolotl**, **Unsloth**, and `llama.cpp`'s finetune tooling — covering every
-Ruby source file and guide in the configured repositories. Every pair is
-capped at `MAX_CONTEXT_TOKENS` (2048 estimated tokens) — long files and
-chapters are split into as many "part i/n" pairs as needed, so nothing is
-truncated at training time.
-
-Each step can also be run individually — see the sections below.
+When it finishes, the training file is `_dataset/_full_ruby_dataset.jsonl`:
+one ShareGPT conversation per line, covering every Ruby source file and
+guide in the configured repositories. Every pair is capped at
+`MAX_CONTEXT_TOKENS` (2048 estimated tokens) — long files and chapters are
+split into as many "part i/n" pairs as needed, so nothing is truncated at
+training time.
 
 ## Train (`bin/train`)
 
@@ -93,176 +72,102 @@ SFT, evaluate the result), follow [TRAIN.md](TRAIN.md).
 
 ## Training recommendation
 
-A simple rule of thumb for building up the training data over time:
-
 > **Never remove previous sources when adding new ones** — accumulation
 > preserves knowledge breadth — and **always do the final training as one
 > combined run** over the accumulated set, not as a sequence of incremental
 > checkpoints.
 
-Since `bin/build` regenerates `_full_ruby_dataset.jsonl` from **every**
-repository under `_sources/`, adding a new source automatically includes it
-alongside all previous ones — the dataset always accumulates. One combined
-training run over that full set gives the most stable, balanced result.
-
-Incremental runs (train on a subset, evaluate, add a source, repeat) are
-still useful, but as a **measurement tool**: they tell you which sources
-actually improve the model on a fixed eval set. Use them to decide what stays
-in `_sources/`, then train the final model on the whole accumulated dataset
-in a single run (see [TRAIN.md](TRAIN.md)).
+`bin/build` regenerates the combined dataset from **every** repository under
+`_sources/`, so adding a source automatically includes it alongside all
+previous ones. Incremental runs (train on a subset, evaluate, add a source,
+repeat) are still useful as a **measurement tool** — they tell you which
+sources actually improve the model on a fixed eval set. Use them to decide
+what stays in `_sources/`, then train the final model on the whole
+accumulated dataset in a single run (see [TRAIN.md](TRAIN.md)).
 
 ---
 
 ## Prerequisites
 
-- **Ruby 3+** (the scripts use only the standard library — the whole data
-  pipeline is pure Ruby: generation, tokenization (`tools/tokenizer.rb`), and
-  dataset verification included. Python is used only by the optional MLX
-  training environment, see [TRAIN.md](TRAIN.md)).
-- Install a modern Ruby with
-  [rbenv](https://github.com/rbenv/rbenv) or another Ruby package manager:
-  ```bash
-  ruby --version   # expect 3.x or newer
-  ```
-- Clones of any Ruby repositories under `_sources/` (relative to this project).
-  The build scripts `git pull` each repo before building, so the clones only
-  need to exist once.
+- **Ruby 3+** — the scripts use only the standard library; the whole data
+  pipeline (generation, tokenization, verification) is pure Ruby. Python is
+  used only by the optional MLX training environment (see [TRAIN.md](TRAIN.md)).
+- Install Ruby with [rbenv](https://github.com/rbenv/rbenv) or another Ruby
+  package manager: `ruby --version` (expect 3.x or newer).
+- Git clones of any Ruby repositories under `_sources/` — the build scripts
+  `git pull` each repo before building, so the clones only need to exist once.
 
 ---
 
-## Scripts
+## Build Scripts
 
-### `main.rb` — run the whole pipeline
-
-Orchestrates the three steps above in order and stops if any of them fails.
-Prints start time and total elapsed time.
-
-```bash
-ruby bin/build
-```
+All scripts are **source-agnostic**: nothing is hardcoded to specific
+repositories — whatever is under `_sources/` is picked up automatically, and
+outputs for removed repos are cleaned up.
 
 ### `build_code_context.rb` — repos → `code_context/` + `_dataset/code_*.jsonl`
 
-Fully **source-agnostic**: scans every repository under `_sources/`, runs
-`git pull` inside each (a failed pull only warns and continues), walks all
-`.rb` files — no assumptions about folder structure — and produces one
-Markdown dump plus one ShareGPT dataset per repository:
-
-| Output | Content |
-|---|---|
-| `code_context/<repo>.md` | agent-friendly source dump (file index + verbatim code) |
-| `_dataset/code_<repo>.jsonl` | training dataset: code reproduction, API explanation, test coverage (long entries split into ≤2048-token parts) |
-
-Add any new repo to `_sources/` and re-run — it's picked up automatically;
-outputs for repos that are removed are cleaned up.
+Walks every `.rb` file in every repository and produces one agent-friendly
+Markdown dump and one ShareGPT dataset per repo: code reproduction, API
+explanation (from the real RDoc comments), and test coverage listings.
 
 ```bash
-ruby build/build_code_context.rb                       # pulls + processes every repo in _sources/
-ruby build/build_code_context.rb /path/to/sources-dir  # use another sources directory
+ruby build/build_code_context.rb [sources_dir]
 ```
-
-Output goes to `./code_context/` (INDEX.md + one file per repo) and one
-`code_*.jsonl` per repo in `./_dataset/`:
-
-```
-code_context/
-├── INDEX.md              # Master index with file counts and sizes
-└── <repo>.md             # All Ruby source from _sources/<repo> (one per repo)
-```
-
-If a `git pull` fails (e.g. offline), the build continues with the sources
-already on disk, printing a warning.
 
 ### `build_docs_context.rb` — repos with guides → `docs_context/`
 
-Source-agnostic, like `build_code_context.rb`: scans every repository under
-`_sources/`, runs `git pull` inside each (a failed pull only warns), and
-converts any repo that ships a `guides/source/documents.yaml` layout. Repos
-without guides are skipped. Output is namespaced per repository:
+Converts any repo shipping a `guides/source/documents.yaml` layout into
+`docs_context/<repo>/<category>/<guide>.md` (YAML front matter kept); repos
+without guides are skipped. For guides following the
+`<major>_<minor>_release_notes` naming, only the newest version is kept
+(pass `--all-release-notes` to keep every version).
 
 ```bash
-ruby build/build_docs_context.rb                       # pulls + converts every repo with guides
-ruby build/build_docs_context.rb /path/to/sources-dir  # use another sources directory
+ruby build/build_docs_context.rb [sources_dir]
 ```
-
-Output goes to `./docs_context/`:
-
-```
-docs_context/
-├── INDEX.md
-└── <repo>/
-    ├── <category>/<guide>.md
-    └── ... (one folder per repo, one file per guide)
-```
-
-Each guide keeps its YAML front matter (title, category, description,
-work-in-progress flag). If `git pull` fails (e.g. offline), the build
-continues with the sources already on disk, printing a warning.
-
-**Release notes**: for guides following the `<major>_<minor>_release_notes`
-naming, only the newest version is kept; older ones are skipped and cleaned
-up. Pass `--all-release-notes` to keep every version.
 
 ### `create_dataset.rb` — aggregate everything → `_dataset/`
 
-Generates the docs datasets and aggregates the full corpus. The code datasets
-(`code_*.jsonl`, produced by `build_code_context.rb`) are picked up as-is;
-the guides in `docs_context/` are converted into one dataset per guide
-(overview entry + per-chapter entries); and everything is concatenated into
-the final `_dataset/_full_ruby_dataset.jsonl`.
+Converts the guides into one dataset per guide (overview + per-chapter
+entries), picks up the `code_*.jsonl` datasets as-is, and concatenates
+everything into `_dataset/_full_ruby_dataset.jsonl`, with an `INDEX.md`
+manifest. The combined write is atomic and self-validating.
 
 ```bash
-ruby create_dataset.rb                    # uses ./docs_context, ./_dataset
-ruby create_dataset.rb docs/ out/         # explicit directories
-```
-
-Output goes to `./_dataset/`:
-
-```
-_dataset/
-├── INDEX.md                  # Manifest: dataset, source, entries, size
-├── code_<repo>.jsonl         # From build_code_context.rb (one per repo)
-├── docs_<repo>_<guide>.jsonl # One per guide
-├── ... (one dataset per repo + per guide)
-└── _full_ruby_dataset.jsonl  # Everything concatenated — the training file
+ruby build/create_dataset.rb [docs_context_dir] [output_dir]
 ```
 
 ### `build_dataset.rb` — one Markdown dump → one dataset file
 
-The original single-file converter: turns one code-context Markdown dump into
-a ShareGPT-format JSONL dataset (code reproduction, API explanation, test
-coverage). `build_code_context.rb` reuses its entry builders.
+The original single-file converter behind `build_code_context.rb`: turns one
+code-context Markdown dump into a ShareGPT JSONL dataset (code reproduction,
+API explanation, test coverage).
 
 **Context-length bounding**: every generated pair is capped at
-`MAX_CONTEXT_TOKENS` (2048, estimated at ~4 chars/token, including chat-
-template overhead) — answers longer than the cap (big source files, long
-guide chapters) are split into as many `(prompt, part i/n)` pairs as needed.
-This keeps the training data free of over-long contexts: nothing gets
-silently truncated at training time, and single-sample memory stays bounded
-(~14 GB peak for an 8B 4-bit model on MLX at 2048 tokens). The same rule
-applies to the code, docs, and SFT entry builders, and the cap is a single
-tunable constant.
+`MAX_CONTEXT_TOKENS` (2048 estimated tokens) — answers longer than the cap
+(big source files, long guide chapters) are split into as many
+`(prompt, part i/n)` pairs as needed. The same rule applies to the code,
+docs, and SFT entry builders.
 
 ```bash
-ruby build/build_dataset.rb                    # first dump found in code_context/
-ruby build/build_dataset.rb path/to/other.md path/to/out.jsonl
+ruby build/build_dataset.rb [input.md] [output.jsonl]
 ```
 
 ### `build_pretrain_corpus.rb` — raw material → pretraining corpus
 
-Builds a plain-text corpus for **domain adaptation (continued pretraining)**:
-one `{"text": ...}` JSON object per line (the format LLaMA-Factory's `pt`
-stage and mlx-lm accept), containing every `.rb` file under `_sources/`
-(verbatim) plus every guide chapter (front matter stripped, split at chapter
-level). Duplicates are removed by content hash.
+Builds the continued-pretraining corpus: every `.rb` file (verbatim) plus
+every guide chapter (front matter stripped, split at chapter level), as one
+`{"text": ...}` JSON object per line — the format LLaMA-Factory's `pt` stage
+and mlx-lm accept. Duplicates are removed by content hash.
 
 ```bash
-ruby build/build_pretrain_corpus.rb            # → _pretrain/ruby_corpus.jsonl
+ruby build/build_pretrain_corpus.rb    # → _pretrain/ruby_corpus.jsonl
 ```
 
 ### `build_sft_pairs.rb` — task-oriented SFT (supervised fine-tuning) set
 
-Builds the **task-oriented SFT training set** on top of the existing datasets:
+Builds the task-oriented SFT set on top of the existing datasets:
 
 | Source | Content |
 |---|---|
@@ -273,20 +178,18 @@ Builds the **task-oriented SFT training set** on top of the existing datasets:
 | guide pairs | how-to Q&A from the guides with diversified natural-language prompts |
 
 ```bash
-ruby build/build_sft_pairs.rb                  # → _dataset/sft_train_set.jsonl
-ruby build/build_sft_pairs.rb --skip-bugs      # skip the (slower) git-history mining
+ruby build/build_sft_pairs.rb [--skip-bugs]   # → _dataset/sft_train_set.jsonl
 ```
 
 ### `build_attribution.rb` — sources → `Attribution.md`
 
-Reads the license file of every repository under `_sources/`, detects the
-license type and copyright holder from its text, and writes the attribution
-table to `Attribution.md` (git-ignored — it lists the repositories you train
-with locally). Repos without a license file are skipped with a warning. Fully
-source-agnostic — the file always matches whatever repositories are present.
+Reads each repository's license file, detects the license type and copyright
+holder, and writes the attribution table to `Attribution.md` (git-ignored —
+it lists the repositories you train with locally). Repos without a license
+file are skipped with a warning.
 
 ```bash
-ruby build/build_attribution.rb                  # → Attribution.md
+ruby build/build_attribution.rb    # → Attribution.md
 ```
 
 ---
@@ -296,28 +199,17 @@ ruby build/build_attribution.rb                  # → Attribution.md
 ### `tools/tokenizer.rb` — our own tokenizer (pure Ruby)
 
 A self-contained re-implementation of the HuggingFace byte-level BPE
-tokenizer (the `tokenizer.json` format). It loads a model's tokenizer files
-and reproduces the original tokenizer's token IDs exactly for this pipeline's
+tokenizer (the `tokenizer.json` format): loads a model's tokenizer files and
+reproduces the original tokenizer's token IDs exactly for this pipeline's
 chat data — verified against the original Python/transformers tokenizer
 (identical token IDs on sampled data, 0 count mismatches on 3,000 real
-entries). No Python and no gems: standard library only.
-
-Implemented: NFC normalization, added/special tokens matched atomically, the
-GPT-2-style pre-tokenization regex, byte-level encoding, BPE merging with a
-per-word cache, and the Qwen-style chat template (system/user/assistant +
-generation prompt, including the empty `<think>` block for the final
-assistant message). The template covers the standard message structure;
-tool-call and multi-step reasoning branches of exotic templates are not
-replicated.
+entries). No Python and no gems: standard library only. See
+[TOKENIZER.md](tools/TOKENIZER.md) for a step-by-step comparison against the
+Python tokenizer.
 
 ```bash
-ruby tools/tokenizer.rb <model_dir>   # CLI: token count of each stdin line
+ruby tools/tokenizer.rb <model_dir> [--ids] [--chat '<messages json>']
 ```
-
-The CLI counts tokens per stdin line; `--ids` also prints the token ids, and
-`--chat '<messages json>'` tokenizes a chat (template applied) instead of
-stdin. [TOKENIZER.md](TOKENIZER.md) walks through comparing both modes
-against the original Python tokenizer, step by step.
 
 As a library:
 
@@ -333,23 +225,20 @@ tok.count_messages(msgs)       # token count of the templated chat
 
 Reports sample count, min/mean/p50/p90/p99/max token lengths, and how many
 samples exceed a threshold (i.e. would be truncated during training). With a
-model directory it uses the real tokenizer; without one it falls back to the
-generator's conservative estimator:
+model directory it uses the real tokenizer; without one, the generator's
+conservative estimator:
 
 ```bash
-ruby tools/seqlen_stats.rb dataset.jsonl <model_dir> [max_len]
-ruby tools/seqlen_stats.rb dataset.jsonl [max_len]
+ruby tools/seqlen_stats.rb dataset.jsonl [model_dir] [max_len]
 ```
 
 ### `tools/find_long.rb` — find over-threshold entries
 
 Lists the entries of a dataset whose token length exceeds a threshold (same
-two counting modes as `seqlen_stats.rb`). Useful for spotting what would be
-truncated, or for checking data you didn't generate yourself.
+two counting modes as `seqlen_stats.rb`):
 
 ```bash
-ruby tools/find_long.rb dataset.jsonl <model_dir> [max_len] [limit]
-ruby tools/find_long.rb dataset.jsonl [max_len] [limit]
+ruby tools/find_long.rb dataset.jsonl [model_dir] [max_len] [limit]
 ```
 
 ### `tools/memmon.rb` — RAM monitor
@@ -378,18 +267,11 @@ WATCHDOG=1 ruby tools/run_capped.rb --min-free-gb 4 -- .venv/bin/mlx_lm.lora ...
 ruby bin/test            # runs every test/test_*.rb; exits non-zero on failure
 ```
 
-- `test/test_split.rb` — context-length bounding (splitting) invariants.
-- `test/test_tokenizer.rb` — tokenizer mechanics always run; golden token-ID
-  tests run when a model directory is available (auto-detected from the
-  Qwen3-8B MLX cache, or `ruby bin/test --model DIR`).
-- `test/test_find_long.rb`, `test/test_seqlen_stats.rb` — the two diagnostic
-  tools, in both counting modes (estimator always; real tokenizer with a
-  model directory).
-- `test/test_pipeline.rb` — end-to-end `bin/build` run against a sandbox
-  (temp data root with a fake source repo: code, tests, guides, license,
-  git history with a bug fix — no model or network needed).
-- `test/test_train.rb` — `bin/train` plan building (flags, defaults, model
-  detection) and `build_mlx_data.rb` in a sandbox.
+Six test files cover the splitting logic, the tokenizer (mechanics always,
+golden token-ID tests when a model directory is available — auto-detected
+from the Qwen3-8B MLX cache, or `ruby bin/test --model DIR`), the two
+diagnostic tools, and the build/train commands (run against an in-memory
+sandbox — no model or network needed).
 
 ---
 
@@ -422,13 +304,12 @@ conventions, test commands, and architectural guidance.
 ~/Desktop/ruby-trainer/
 ├── README.md                   ← You are here
 ├── TRAIN.md                    ← Step-by-step local model training (MLX)
-├── TOKENIZER.md                ← Compare our tokenizer vs the Python reference
 ├── bin/build                   ← One-shot data pipeline (docs + code + datasets + SFT)
 ├── bin/train                   ← Rebuild slice + run LoRA training
 ├── bin/test                    ← Runs all tests (test/test_*.rb)
 ├── build/                      ← Pipeline scripts: main.rb + build_*.rb + create_dataset.rb
 ├── test/                       ← Tests: split logic + tokenizer golden values
-├── tools/                      ← tokenizer.rb + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
+├── tools/                      ← tokenizer.rb + TOKENIZER.md + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
 ├── _sources/                   ← Git clones of the source repositories
 ├── Attribution.md              ← Generated (git-ignored): license table per source
 ├── code_context/               ← Generated: one .md + one dataset per repo
@@ -448,7 +329,7 @@ The tokenizer (`tools/tokenizer.rb`) is an original Ruby implementation with
 no copied HuggingFace code; its byte table and pre-tokenization regex are
 functionally equivalent to OpenAI's GPT-2 (MIT), and its vocabulary/merge
 data is loaded at runtime from the model's own `tokenizer.json` (Qwen3:
-Apache-2.0) — see the attribution section in [TOKENIZER.md](TOKENIZER.md).
+Apache-2.0) — see [TOKENIZER.md](tools/TOKENIZER.md).
 
 The context files and datasets can be derived from third-party open-source
 projects, each with its own license. Every repository under `_sources/` keeps

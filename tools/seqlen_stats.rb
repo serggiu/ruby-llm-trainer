@@ -53,7 +53,7 @@ def collect_lengths(lines, tokenizer: nil)
       msgs = messages_from(JSON.parse(line))
     rescue JSON::ParserError => e
       bad += 1
-      puts "  [warn] line #{i + 1}: #{e.message}"
+      warn "  [warn] line #{i + 1}: #{e.message}"
       next
     end
 

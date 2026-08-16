@@ -30,14 +30,14 @@ BAD_JSON = "{not valid json"
 LINES = [BIG, NORMAL, MSGS, "", BAD_JSON].freeze
 
 # --- estimator mode ---
-results = find_over_limit(LINES, max_len: MAX_CONTEXT_TOKENS, limit: 20, tokenizer: nil)
+results = quietly { find_over_limit(LINES, max_len: MAX_CONTEXT_TOKENS, limit: 20, tokenizer: nil) }
 assert_equal [1, 3], results.map { |r| r[:line] },
              "flags the two over-limit entries (lines 1 and 3), skips empty/bad"
 assert results.all? { |r| r[:len] > MAX_CONTEXT_TOKENS }, "all flagged lengths exceed the cap"
 assert_equal 20_014, results[0][:chars], "chars = total content bytes"
 assert_equal "Show me big.rb", results[0][:prompt], "prompt preview is the first message"
 
-limited = find_over_limit(LINES, max_len: MAX_CONTEXT_TOKENS, limit: 1, tokenizer: nil)
+limited = quietly { find_over_limit(LINES, max_len: MAX_CONTEXT_TOKENS, limit: 1, tokenizer: nil) }
 assert_equal [1], limited.map { |r| r[:line] }, "limit caps the number of results"
 
 none = find_over_limit([NORMAL], max_len: MAX_CONTEXT_TOKENS, limit: 20, tokenizer: nil)
