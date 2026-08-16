@@ -1,0 +1,9 @@
+.venv
+.DS_Store
+Attribution.md
+code_context/*
+docs_context/*
+_dataset/*
+_mlx/*
+_pretrain/*
+_sources/*
