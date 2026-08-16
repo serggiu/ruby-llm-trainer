@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build a fine-tuning dataset from a code-context Markdown dump.
 #
 # Reads a code-context Markdown dump (as produced by build_code_context.rb)
@@ -20,23 +24,23 @@
 # needed, so no generated pair exceeds the cap.
 #
 # Usage:
-#   ruby build_dataset.rb [input.md] [output.jsonl]
+#   ruby build/build_dataset.rb [input.md] [output.jsonl]
 #
 # Defaults: the first dump in code_context/ → _dataset/<dump>.jsonl
 
 require "fileutils"
 require "json"
 
-DEFAULT_MD = Dir.glob(File.join(__dir__, "code_context", "*.md"))
+DEFAULT_MD = Dir.glob(File.join(ROOT, "code_context", "*.md"))
                     .reject { |f| File.basename(f) == "INDEX.md" }
                     .sort
                     .first
 INPUT_MD = File.expand_path(ARGV[0] || DEFAULT_MD.to_s)
 OUTPUT_JSONL = File.expand_path(
   ARGV[1] || if DEFAULT_MD
-               File.join(__dir__, "_dataset", "#{File.basename(DEFAULT_MD, ".md")}.jsonl")
+               File.join(ROOT, "_dataset", "#{File.basename(DEFAULT_MD, ".md")}.jsonl")
              else
-               File.join(__dir__, "_dataset", "dataset.jsonl")
+               File.join(ROOT, "_dataset", "dataset.jsonl")
              end
 )
 

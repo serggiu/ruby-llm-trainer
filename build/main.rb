@@ -16,7 +16,7 @@
 # earlier ones' output.
 #
 # Usage:
-#   ruby main.rb
+#   ruby build/main.rb
 
 require "rbconfig"
 

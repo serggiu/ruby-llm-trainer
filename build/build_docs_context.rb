@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build docs-context Markdown files from every repository under _sources/
 # that ships guides.
 #
@@ -16,7 +20,7 @@
 # removed automatically.
 #
 # Usage:
-#   ruby build_docs_context.rb [sources_dir]
+#   ruby build/build_docs_context.rb [sources_dir]
 #
 # Defaults to _sources/ relative to this script.
 
@@ -27,8 +31,8 @@ require "set"
 POS_ARGS   = ARGV.reject { |a| a.start_with?("--") }
 FLAGS      = ARGV.select { |a| a.start_with?("--") }
 
-SOURCES_ROOT = File.expand_path(POS_ARGS[0] || File.join(File.dirname(__FILE__), "_sources"))
-OUTPUT_DIR   = File.join(File.dirname(__FILE__), "docs_context")
+SOURCES_ROOT = File.expand_path(POS_ARGS[0] || File.join(ROOT, "_sources"))
+OUTPUT_DIR   = File.join(ROOT, "docs_context")
 
 # ---------------------------------------------------------------------------
 # Repo discovery & git refresh

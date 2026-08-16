@@ -5,7 +5,7 @@
 # (MAX_CONTEXT_TOKENS, split_text_chunks, split_long_entries).
 
 require_relative "helper"
-require_relative "../build_dataset"
+require_relative "../build/build_dataset"
 
 def build_long_answer
   (1..900).map { |i| "def method_#{i}\n  # doc for #{i}\n  #{i} * 2\nend\n" }.join

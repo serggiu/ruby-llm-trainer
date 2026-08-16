@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build fine-tuning datasets from the docs and the per-repo code datasets.
 #
 # The code datasets (code_<repo>.jsonl, one per repository under _sources/)
@@ -28,8 +32,8 @@ require "json"
 require "yaml"
 require_relative "build_dataset"
 
-DOCS_CONTEXT_DIR = File.expand_path(ARGV[0] || File.join(__dir__, "docs_context"))
-OUTPUT_DIR       = File.expand_path(ARGV[1] || File.join(__dir__, "_dataset"))
+DOCS_CONTEXT_DIR = File.expand_path(ARGV[0] || File.join(ROOT, "docs_context"))
+OUTPUT_DIR       = File.expand_path(ARGV[1] || File.join(ROOT, "_dataset"))
 
 SKIP_FILES = %w[INDEX.md].freeze
 

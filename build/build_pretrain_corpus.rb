@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build a plain-text corpus for continued pretraining (domain adaptation).
 #
 # Emits one {"text": "..."} JSON object per line — the format accepted by
@@ -14,7 +18,7 @@
 # on bad data. Duplicate documents (by content hash) are emitted only once.
 #
 # Usage:
-#   ruby build_pretrain_corpus.rb [output.jsonl]
+#   ruby build/build_pretrain_corpus.rb [output.jsonl]
 #
 # Defaults to _pretrain/ruby_corpus.jsonl.
 
@@ -23,9 +27,9 @@ require "json"
 require "digest"
 require_relative "create_dataset"
 
-SOURCES_ROOT = File.join(File.dirname(__FILE__), "_sources")
-DOCS_DIR     = File.join(File.dirname(__FILE__), "docs_context")
-OUTPUT       = File.expand_path(ARGV[0] || File.join(File.dirname(__FILE__), "_pretrain", "ruby_corpus.jsonl"))
+SOURCES_ROOT = File.join(ROOT, "_sources")
+DOCS_DIR     = File.join(ROOT, "docs_context")
+OUTPUT       = File.expand_path(ARGV[0] || File.join(ROOT, "_pretrain", "ruby_corpus.jsonl"))
 
 SKIP_DIRS = %w[.git node_modules vendor tmp log .bundle pkg].freeze
 

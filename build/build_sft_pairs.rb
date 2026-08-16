@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build the task-oriented SFT (supervised fine-tuning) training set for fine-tuning a local LLM on
 # Ruby.
 #
@@ -23,7 +27,7 @@
 # pairs are deduplicated by answer content.
 #
 # Usage:
-#   ruby build_sft_pairs.rb [dataset_dir] [output.jsonl] [--skip-bugs]
+#   ruby build/build_sft_pairs.rb [dataset_dir] [output.jsonl] [--skip-bugs]
 #
 # Defaults: _dataset → _dataset/sft_train_set.jsonl
 
@@ -36,13 +40,13 @@ require_relative "create_dataset"
 POS_ARGS   = ARGV.reject { |a| a.start_with?("--") }
 FLAGS      = ARGV.select { |a| a.start_with?("--") }
 
-DATASET_DIR = File.expand_path(POS_ARGS[0] || File.join(File.dirname(__FILE__), "_dataset"))
+DATASET_DIR = File.expand_path(POS_ARGS[0] || File.join(ROOT, "_dataset"))
 OUTPUT      = File.expand_path(POS_ARGS[1] || File.join(DATASET_DIR, "sft_train_set.jsonl"))
 SKIP_BUGS   = FLAGS.include?("--skip-bugs")
 
-CODE_DIR = File.join(File.dirname(__FILE__), "code_context")
-DOCS_DIR = File.join(File.dirname(__FILE__), "docs_context")
-SOURCES_ROOT = File.join(File.dirname(__FILE__), "_sources")
+CODE_DIR = File.join(ROOT, "code_context")
+DOCS_DIR = File.join(ROOT, "docs_context")
+SOURCES_ROOT = File.join(ROOT, "_sources")
 
 # ---------------------------------------------------------------------------
 # 1. Base entries (deduplicated)

@@ -19,6 +19,15 @@ def assert_equal(expected, actual, label = nil)
   assert(expected == actual, label || "expected #{expected.inspect}, got #{actual.inspect}")
 end
 
+def assert_raises(error_class, label = "raises #{error_class}")
+  $assertions += 1
+  yield
+  $failures += 1
+  puts "  FAIL: #{label} — nothing raised"
+rescue error_class
+  # expected
+end
+
 at_exit do
   puts
   if $failures.zero?

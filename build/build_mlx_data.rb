@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Convert the ShareGPT-format SFT set into MLX training data and slice it.
 #
 # MLX (mlx_lm.lora) expects one of:
@@ -14,9 +18,9 @@
 # the {"text": ...} format MLX accepts, so it needs no conversion.)
 #
 # Usage:
-#   ruby build_mlx_data.rb                 # → _mlx/{train,valid}.jsonl (300/50)
-#   ruby build_mlx_data.rb 12000 1000      # bigger slice
-#   ruby build_mlx_data.rb 0 0 --full      # whole set: 0 = "no limit"
+#   ruby build/build_mlx_data.rb                 # → _mlx/{train,valid}.jsonl (300/50)
+#   ruby build/build_mlx_data.rb 12000 1000      # bigger slice
+#   ruby build/build_mlx_data.rb 0 0 --full      # whole set: 0 = "no limit"
 
 require "fileutils"
 require "json"
@@ -26,8 +30,8 @@ FLAGS      = ARGV.select { |a| a.start_with?("--") }
 
 TRAIN_COUNT = Integer(POS_ARGS[0] || 300)
 VALID_COUNT = Integer(POS_ARGS[1] || 50)
-INPUT       = File.expand_path(POS_ARGS[2] || File.join(File.dirname(__FILE__), "_dataset", "sft_train_set.jsonl"))
-OUT_DIR     = File.expand_path(POS_ARGS[3] || File.join(File.dirname(__FILE__), "_mlx"))
+INPUT       = File.expand_path(POS_ARGS[2] || File.join(ROOT, "_dataset", "sft_train_set.jsonl"))
+OUT_DIR     = File.expand_path(POS_ARGS[3] || File.join(ROOT, "_mlx"))
 # Entries longer than this many characters are dropped (0 = keep everything).
 # Extremely long entries (100k+ chars) tokenize to >100k tokens and have been
 # observed to destabilize training; ~80k chars ≈ 20k tokens.
@@ -48,6 +52,8 @@ end
 def limited?(count, limit)
   !limit.zero? && count >= limit
 end
+
+abort "Input not found: #{INPUT}\nRun `ruby bin/build` first to generate the SFT set, then retry." unless File.file?(INPUT)
 
 FileUtils.mkdir_p(OUT_DIR)
 

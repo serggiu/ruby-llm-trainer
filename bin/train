@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Rebuilds the MLX chat-format slice from the fresh SFT set and runs LoRA
+# training on it.
+#
+# Usage:
+#   ruby bin/train [--iters 1000] [--slice proper|smoke|full] [--adapter DIR]
+#                  [--watchdog] [--model DIR] [--dry-run]
+#
+#   --iters N       training iterations (default 1000)
+#   --slice NAME    data slice: smoke (300/50), proper (3000/200), full (20000/700)
+#   --adapter DIR   adapter output dir (default _mlx/adapters_qwen3)
+#   --watchdog      supervise the run with the memory watchdog (WATCHDOG=1)
+#   --model DIR     model directory (default: the Qwen3-8B MLX cache)
+#   --dry-run       print the commands without running them
+#
+# Data root: LLM_TRAINER_ROOT env override (used by tests to run in a
+# sandbox); the scripts/venv always come from this repository.
+
+require "rbconfig"
+
+SCRIPTS = File.expand_path("..", __dir__) # this repository (scripts, .venv)
+ROOT = ENV["LLM_TRAINER_ROOT"] || SCRIPTS # where _dataset/, _mlx/ live
+RUBY = RbConfig.ruby
+
+SLICES = {
+  "smoke"  => [300, 50],
+  "proper" => [3000, 200],
+  "full"   => [20_000, 700],
+}.freeze
+
+DEFAULT_MODEL_CACHE = File.expand_path(
+  "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
+)
+
+# Parses ARGV and builds the plan. Raises ArgumentError on bad input.
+# Returns a hash with the slice/command details (see test/test_train.rb).
+def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE)
+  iters = 1000
+  slice = "proper"
+  adapter = "_mlx/adapters_qwen3"
+  watchdog = false
+  dry_run = false
+  model = nil
+
+  args = argv.dup
+  until args.empty?
+    opt = args.shift
+    case opt
+    when "--iters"    then iters = Integer(args.shift)
+    when "--slice"    then slice = args.shift
+    when "--adapter"  then adapter = args.shift
+    when "--model"    then model = args.shift
+    when "--watchdog" then watchdog = true
+    when "--dry-run"  then dry_run = true
+    else raise ArgumentError, "unknown option: #{opt}"
+    end
+  end
+
+  raise ArgumentError, "unknown slice: #{slice} (use #{SLICES.keys.join(', ')})" unless SLICES.key?(slice)
+
+  model ||= ENV["TOKENIZER_MODEL_DIR"]
+  if model.nil? || model.empty?
+    cached = Dir.glob(model_cache_glob).first
+    raise ArgumentError, "no model found — pass --model DIR" if cached.nil?
+    model = File.dirname(cached)
+  end
+
+  train_count, valid_count = SLICES[slice]
+  slice_dir = File.join(data_root, "_mlx", "qwen3_#{slice}")
+  sft_set = File.join(data_root, "_dataset", "sft_train_set.jsonl")
+
+  build_cmd = [RUBY, File.join(scripts, "build", "build_mlx_data.rb"),
+               train_count.to_s, valid_count.to_s, sft_set, slice_dir,
+               "--max-chars=80000"]
+
+  lora = File.join(scripts, ".venv", "bin", "mlx_lm.lora")
+  train_cmd = [lora, "--model", model, "--train", "--data", slice_dir,
+               "--adapter-path", File.join(data_root, adapter),
+               "--iters", iters.to_s, "--batch-size", "1", "--learning-rate", "1e-5",
+               "--steps-per-report", "20", "--steps-per-eval", "200",
+               "--val-batches", "10", "--max-seq-length", "2048"]
+  run_cmd = [RUBY, File.join(scripts, "tools", "run_capped.rb"), "--", *train_cmd]
+
+  {
+    iters: iters, slice: slice, train_count: train_count, valid_count: valid_count,
+    slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, model: model,
+    watchdog: watchdog, dry_run: dry_run,
+    lora: lora, build_cmd: build_cmd, run_cmd: run_cmd,
+  }
+end
+
+if __FILE__ == $PROGRAM_NAME
+  begin
+    plan = build_plan(ARGV, scripts: SCRIPTS, data_root: ROOT)
+  rescue ArgumentError => e
+    abort e.message
+  end
+
+  unless File.exist?(plan[:sft_set])
+    abort "Training data not found: #{plan[:sft_set]}\n" \
+          "Run `ruby bin/build` first to generate the SFT set, then retry."
+  end
+
+  abort ".venv not found — follow TRAIN.md setup first" unless File.exist?(plan[:lora])
+
+  puts "slice:   qwen3_#{plan[:slice]} (#{plan[:train_count]} train / #{plan[:valid_count]} valid)"
+  puts "iters:   #{plan[:iters]}"
+  puts "adapter: #{plan[:adapter]}"
+  puts "model:   #{plan[:model]}"
+  puts "watchdog: #{plan[:watchdog] ? 'on' : 'off'}"
+  puts
+  puts "$ #{plan[:build_cmd].join(' ')}"
+  puts "$ #{plan[:run_cmd].join(' ')}"
+  exit 0 if plan[:dry_run]
+
+  abort "slice build failed" unless system(*plan[:build_cmd])
+
+  env = plan[:watchdog] ? { "WATCHDOG" => "1" } : {}
+  ok = system(env, *plan[:run_cmd])
+  exit(ok ? 0 : 1)
+end

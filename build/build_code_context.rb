@@ -1,6 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox).
+ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
+
 # Build code-context files from every repository under _sources/.
 #
 # Fully source-agnostic: it scans _sources/*, runs `git pull` inside each repo
@@ -15,7 +19,7 @@
 # _sources/) are removed automatically.
 #
 # Usage:
-#   ruby build_code_context.rb [sources_dir]
+#   ruby build/build_code_context.rb [sources_dir]
 #
 # Defaults to _sources/ relative to this script.
 
@@ -24,9 +28,9 @@ require "json"
 require "set"
 require_relative "build_dataset"
 
-SOURCES_ROOT     = File.expand_path(ARGV[0] || File.join(File.dirname(__FILE__), "_sources"))
-OUTPUT_MD_DIR    = File.join(File.dirname(__FILE__), "code_context")
-OUTPUT_JSONL_DIR = File.join(File.dirname(__FILE__), "_dataset")
+SOURCES_ROOT     = File.expand_path(ARGV[0] || File.join(ROOT, "_sources"))
+OUTPUT_MD_DIR    = File.join(ROOT, "code_context")
+OUTPUT_JSONL_DIR = File.join(ROOT, "_dataset")
 
 SKIP_DIRS = %w[.git node_modules vendor tmp log .bundle pkg].to_set.freeze
 

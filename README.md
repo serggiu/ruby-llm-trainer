@@ -30,13 +30,16 @@ only a warning).
 
 Any repo works; ones without `.rb` files are simply skipped.
 
-## Run everything (main.rb)
+## Run everything (`bin/build`)
 
-The one-shot pipeline. It pulls the latest sources, rebuilds the code and
-docs context, and regenerates the whole training corpus:
+The one-shot pipeline (`bin/build` calls the orchestrator `build/main.rb`, then
+builds the pretraining corpus and the SFT set). It pulls the latest sources,
+rebuilds the code and docs context, and regenerates the whole training
+corpus:
 
 ```bash
-ruby main.rb
+ruby bin/build                  # full pipeline
+ruby bin/build --skip-bugs      # skip the (slower) git-history bug mining
 ```
 
 That runs, in order:
@@ -44,6 +47,9 @@ That runs, in order:
 1. `build_docs_context.rb` — `git pull` every repo under `_sources/`, rebuild `docs_context/`
 2. `build_code_context.rb` — `git pull` every repo under `_sources/`, rebuild `code_context/`
 3. `create_dataset.rb` — rebuild every dataset and concatenate them all
+4. `build_attribution.rb` — regenerate `Attribution.md`
+5. `build_pretrain_corpus.rb` — rebuild `_pretrain/ruby_corpus.jsonl` (CPT data)
+6. `build_sft_pairs.rb` — rebuild `_dataset/sft_train_set.jsonl` (task SFT set)
 
 When it finishes, the final training file is:
 
@@ -62,6 +68,26 @@ truncated at training time.
 
 Each step can also be run individually — see the sections below.
 
+## Train (`bin/train`)
+
+Rebuilds the MLX chat-format slice from the fresh SFT set and runs LoRA
+training on it:
+
+```bash
+ruby bin/train                              # 1000 iters on the proper slice
+ruby bin/train --iters 5000 --slice full    # longer run on the full slice
+ruby bin/train --watchdog                   # supervised by the memory watchdog
+ruby bin/train --dry-run                    # print the commands, don't run
+```
+
+Options: `--iters N` (default 1000), `--slice smoke|proper|full` (300/50,
+3000/200, 20000/700), `--adapter DIR` (default `_mlx/adapters_qwen3`),
+`--watchdog`, `--model DIR` (default: the Qwen3-8B MLX cache).
+
+`bin/train` needs the SFT set produced by the build step — if it's missing
+(e.g. you haven't run `bin/build` yet), it fails with a message telling you
+to run `ruby bin/build` first.
+
 **To train a model on this data** (install MLX, run continued pretraining +
 SFT, evaluate the result), follow [TRAIN.md](TRAIN.md).
 
@@ -74,7 +100,7 @@ A simple rule of thumb for building up the training data over time:
 > combined run** over the accumulated set, not as a sequence of incremental
 > checkpoints.
 
-Since `main.rb` regenerates `_full_ruby_dataset.jsonl` from **every**
+Since `bin/build` regenerates `_full_ruby_dataset.jsonl` from **every**
 repository under `_sources/`, adding a new source automatically includes it
 alongside all previous ones — the dataset always accumulates. One combined
 training run over that full set gives the most stable, balanced result.
@@ -112,7 +138,7 @@ Orchestrates the three steps above in order and stops if any of them fails.
 Prints start time and total elapsed time.
 
 ```bash
-ruby main.rb
+ruby bin/build
 ```
 
 ### `build_code_context.rb` — repos → `code_context/` + `_dataset/code_*.jsonl`
@@ -131,8 +157,8 @@ Add any new repo to `_sources/` and re-run — it's picked up automatically;
 outputs for repos that are removed are cleaned up.
 
 ```bash
-ruby build_code_context.rb                       # pulls + processes every repo in _sources/
-ruby build_code_context.rb /path/to/sources-dir  # use another sources directory
+ruby build/build_code_context.rb                       # pulls + processes every repo in _sources/
+ruby build/build_code_context.rb /path/to/sources-dir  # use another sources directory
 ```
 
 Output goes to `./code_context/` (INDEX.md + one file per repo) and one
@@ -155,8 +181,8 @@ converts any repo that ships a `guides/source/documents.yaml` layout. Repos
 without guides are skipped. Output is namespaced per repository:
 
 ```bash
-ruby build_docs_context.rb                       # pulls + converts every repo with guides
-ruby build_docs_context.rb /path/to/sources-dir  # use another sources directory
+ruby build/build_docs_context.rb                       # pulls + converts every repo with guides
+ruby build/build_docs_context.rb /path/to/sources-dir  # use another sources directory
 ```
 
 Output goes to `./docs_context/`:
@@ -218,8 +244,8 @@ applies to the code, docs, and SFT entry builders, and the cap is a single
 tunable constant.
 
 ```bash
-ruby build_dataset.rb                    # first dump found in code_context/
-ruby build_dataset.rb path/to/other.md path/to/out.jsonl
+ruby build/build_dataset.rb                    # first dump found in code_context/
+ruby build/build_dataset.rb path/to/other.md path/to/out.jsonl
 ```
 
 ### `build_pretrain_corpus.rb` — raw material → pretraining corpus
@@ -231,7 +257,7 @@ stage and mlx-lm accept), containing every `.rb` file under `_sources/`
 level). Duplicates are removed by content hash.
 
 ```bash
-ruby build_pretrain_corpus.rb            # → _pretrain/ruby_corpus.jsonl
+ruby build/build_pretrain_corpus.rb            # → _pretrain/ruby_corpus.jsonl
 ```
 
 ### `build_sft_pairs.rb` — task-oriented SFT (supervised fine-tuning) set
@@ -247,8 +273,8 @@ Builds the **task-oriented SFT training set** on top of the existing datasets:
 | guide pairs | how-to Q&A from the guides with diversified natural-language prompts |
 
 ```bash
-ruby build_sft_pairs.rb                  # → _dataset/sft_train_set.jsonl
-ruby build_sft_pairs.rb --skip-bugs      # skip the (slower) git-history mining
+ruby build/build_sft_pairs.rb                  # → _dataset/sft_train_set.jsonl
+ruby build/build_sft_pairs.rb --skip-bugs      # skip the (slower) git-history mining
 ```
 
 ### `build_attribution.rb` — sources → `Attribution.md`
@@ -260,7 +286,7 @@ with locally). Repos without a license file are skipped with a warning. Fully
 source-agnostic — the file always matches whatever repositories are present.
 
 ```bash
-ruby build_attribution.rb                  # → Attribution.md
+ruby build/build_attribution.rb                  # → Attribution.md
 ```
 
 ---
@@ -356,6 +382,14 @@ ruby bin/test            # runs every test/test_*.rb; exits non-zero on failure
 - `test/test_tokenizer.rb` — tokenizer mechanics always run; golden token-ID
   tests run when a model directory is available (auto-detected from the
   Qwen3-8B MLX cache, or `ruby bin/test --model DIR`).
+- `test/test_find_long.rb`, `test/test_seqlen_stats.rb` — the two diagnostic
+  tools, in both counting modes (estimator always; real tokenizer with a
+  model directory).
+- `test/test_pipeline.rb` — end-to-end `bin/build` run against a sandbox
+  (temp data root with a fake source repo: code, tests, guides, license,
+  git history with a bug fix — no model or network needed).
+- `test/test_train.rb` — `bin/train` plan building (flags, defaults, model
+  detection) and `build_mlx_data.rb` in a sandbox.
 
 ---
 
@@ -389,18 +423,12 @@ conventions, test commands, and architectural guidance.
 ├── README.md                   ← You are here
 ├── TRAIN.md                    ← Step-by-step local model training (MLX)
 ├── TOKENIZER.md                ← Compare our tokenizer vs the Python reference
-├── main.rb                     ← One-shot pipeline (code + docs + datasets)
-├── build_code_context.rb       ← Repos in _sources/ → code_context/ + code datasets
-├── build_docs_context.rb       ← Repos with guides → docs_context/
-├── build_dataset.rb            ← Single-dump dataset converter
-├── create_dataset.rb           ← Aggregates code datasets + guides → _full_ruby_dataset.jsonl
-├── build_pretrain_corpus.rb    ← Continued-pretraining corpus builder
-├── build_sft_pairs.rb          ← Task-oriented SFT set builder
-├── build_attribution.rb        ← Regenerates Attribution.md (git-ignored)
-├── build_mlx_data.rb           ← ShareGPT → MLX chat format converter
-├── bin/test                     ← Runs all tests (test/test_*.rb)
-├── test/                        ← Tests: split logic + tokenizer golden values
-├── tools/                       ← tokenizer.rb + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
+├── bin/build                   ← One-shot data pipeline (docs + code + datasets + SFT)
+├── bin/train                   ← Rebuild slice + run LoRA training
+├── bin/test                    ← Runs all tests (test/test_*.rb)
+├── build/                      ← Pipeline scripts: main.rb + build_*.rb + create_dataset.rb
+├── test/                       ← Tests: split logic + tokenizer golden values
+├── tools/                      ← tokenizer.rb + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
 ├── _sources/                   ← Git clones of the source repositories
 ├── Attribution.md              ← Generated (git-ignored): license table per source
 ├── code_context/               ← Generated: one .md + one dataset per repo
@@ -433,7 +461,7 @@ It is git-ignored, since it lists the exact repositories used for local
 training; regenerate it anytime with:
 
 ```bash
-ruby build_attribution.rb
+ruby build/build_attribution.rb
 ```
 
 All licenses in use permit the intended use of this project: training and

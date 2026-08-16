@@ -70,18 +70,18 @@ The Ruby scripts (no Python needed) generate everything the trainer consumes:
 
 ```bash
 # Full context + datasets (pulls _sources/*, builds code_context/, docs_context/, _dataset/)
-ruby main.rb
+ruby bin/build
 
 # OR individually:
-ruby build_code_context.rb     # code_context/ (one file per source repository)
-ruby build_docs_context.rb     # docs_context/ (guides from every repository)
+ruby build/build_code_context.rb     # code_context/ (one file per source repository)
+ruby build/build_docs_context.rb     # docs_context/ (guides from every repository)
 ruby create_dataset.rb         # _dataset/*.jsonl + _dataset/_full_ruby_dataset.jsonl
 
 # Training data:
-ruby build_code_context.rb      # code_context/<repo>.md + _dataset/code_<repo>.jsonl
-ruby build_pretrain_corpus.rb   # _pretrain/ruby_corpus.jsonl  (CPT corpus, {"text": ...})
-ruby build_sft_pairs.rb         # _dataset/sft_train_set.jsonl (task SFT set, ShareGPT)
-ruby build_mlx_data.rb 12000 1000   # _mlx/train.jsonl + _mlx/valid.jsonl (MLX chat format)
+ruby build/build_code_context.rb      # code_context/<repo>.md + _dataset/code_<repo>.jsonl
+ruby build/build_pretrain_corpus.rb   # _pretrain/ruby_corpus.jsonl  (CPT corpus, {"text": ...})
+ruby build/build_sft_pairs.rb         # _dataset/sft_train_set.jsonl (task SFT set, ShareGPT)
+ruby build/build_mlx_data.rb 12000 1000   # _mlx/train.jsonl + _mlx/valid.jsonl (MLX chat format)
 ```
 
 All generated conversation pairs are capped at ~2048 tokens
@@ -94,7 +94,7 @@ data).
 `build_mlx_data.rb 12000 1000` writes `_mlx/train.jsonl` + `_mlx/valid.jsonl`
 and overwrites them each run. To keep several slices at once (smoke / test /
 full), pass the input file and output dir explicitly:
-`ruby build_mlx_data.rb 3000 200 _dataset/sft_train_set.jsonl _mlx/qwen3_proper`
+`ruby build/build_mlx_data.rb 3000 200 _dataset/sft_train_set.jsonl _mlx/qwen3_proper`
 
 | File | Format | Used by |
 |---|---|---|
@@ -258,10 +258,10 @@ python3 -m venv .venv
 .venv/bin/python -c "from mlx_lm import load; m, t = load('Qwen/Qwen2.5-3B-Instruct'); print('model loaded OK')"
 
 # ---- data (Ruby) ----
-ruby main.rb
-ruby build_pretrain_corpus.rb
-ruby build_sft_pairs.rb
-ruby build_mlx_data.rb 12000 1000
+ruby bin/build
+ruby build/build_pretrain_corpus.rb
+ruby build/build_sft_pairs.rb
+ruby build/build_mlx_data.rb 12000 1000
 
 # ---- stage 1: continued pretraining (optional) ----
 .venv/bin/mlx_lm.lora --model Qwen/Qwen2.5-3B-Instruct --train \
@@ -307,14 +307,9 @@ its quantized version.
 ruby-trainer/
 ├── TRAIN.md                  ← you are here
 ├── README.md                 ← pipeline + scripts + licensing
-├── main.rb                   ← one-shot: build code + docs + datasets
-├── build_code_context.rb     ← Repos in _sources/ → code_context/ + code datasets
-├── build_docs_context.rb     ← Repos with guides → docs_context/
-├── create_dataset.rb         ← Aggregates code + docs datasets → _full_ruby_dataset.jsonl
-├── build_pretrain_corpus.rb  ← raw code + guides → _pretrain/ruby_corpus.jsonl
-├── build_sft_pairs.rb        ← datasets + task pairs → _dataset/sft_train_set.jsonl
-├── build_attribution.rb      ← license table → Attribution.md (git-ignored)
-├── build_mlx_data.rb         ← ShareGPT → MLX chat format (_mlx/)
+├── bin/build                 ← one-shot data pipeline (docs + code + datasets + SFT)
+├── bin/train                 ← rebuild slice + run LoRA training
+├── build/                    ← pipeline scripts (main.rb + build_*.rb + create_dataset.rb)
 ├── .venv/                    ← Python + MLX (created by you)
 ├── _sources/                 ← git clones of the source repositories
 ├── code_context/  docs_context/  _pretrain/  _dataset/

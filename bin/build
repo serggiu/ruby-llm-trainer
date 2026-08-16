@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Full data pipeline: docs context, code context, datasets, attribution,
+# the continued-pretraining corpus, and the task-oriented SFT set.
+#
+# Usage:
+#   ruby bin/build                # everything
+#   ruby bin/build --skip-bugs    # skip the (slower) git-history bug mining
+
+require "rbconfig"
+
+ROOT = File.expand_path("..", __dir__)
+RUBY = RbConfig.ruby
+SKIP_BUGS = ARGV.include?("--skip-bugs")
+
+STEPS = [
+  ["Pipeline (docs + code + datasets + attribution)", "main.rb"],
+  ["Pretrain corpus", "build_pretrain_corpus.rb"],
+  ["SFT set", "build_sft_pairs.rb"],
+].freeze
+
+def run_step(label, script)
+  puts
+  puts "=== #{label} (#{script}) ==="
+  args = [RUBY, File.join(ROOT, "build", script)]
+  args << "--skip-bugs" if script == "build_sft_pairs.rb" && SKIP_BUGS
+  ok = system(*args)
+  abort "FAILED: #{script}" unless ok
+end
+
+started_at = Time.now
+puts "Build started at #{started_at.strftime("%Y-%m-%d %H:%M:%S")}"
+
+STEPS.each { |label, script| run_step(label, script) }
+
+elapsed = Time.now - started_at
+puts
+puts "Done! Datasets in _dataset/ (#{elapsed.round(1)}s)."
+puts "Next: ruby bin/train"
