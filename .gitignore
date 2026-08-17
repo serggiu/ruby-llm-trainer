@@ -2,8 +2,8 @@
 .DS_Store
 Attribution.md
 --skip-bugs/*
-code_context/*.md
-docs_context/*.md
+code_context/**/*.md
+docs_context/**/*.md
 _dataset/*
 _mlx/*
 _pretrain/*
