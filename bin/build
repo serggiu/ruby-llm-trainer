@@ -10,9 +10,28 @@
 
 require "rbconfig"
 
-ROOT = File.expand_path("..", __dir__)
+# Data root — where _sources/, _dataset/, etc. live. Override with
+# LLM_TRAINER_ROOT (used by tests to run the pipeline in a sandbox); the
+# build scripts always come from this repository.
+SCRIPTS = File.expand_path("..", __dir__)
+ROOT = ENV["LLM_TRAINER_ROOT"] || SCRIPTS
 RUBY = RbConfig.ruby
 SKIP_BUGS = ARGV.include?("--skip-bugs")
+
+# Same hold-out split as build_sft_pairs.rb: ~20% for validation (at least
+# 10, never more than half) — the rest trains for one epoch.
+def recommended_iters(total)
+  valid = (total * 0.2).round
+  valid = [valid, 10].max
+  valid = [valid, total / 2].min
+  total - valid
+end
+
+def count_entries(path)
+  count = 0
+  File.foreach(path) { count += 1 }
+  count
+end
 
 STEPS = [
   ["Pipeline (docs + code + datasets + attribution)", "main.rb"],
@@ -23,7 +42,7 @@ STEPS = [
 def run_step(label, script)
   puts
   puts "=== #{label} (#{script}) ==="
-  args = [RUBY, File.join(ROOT, "build", script)]
+  args = [RUBY, File.join(SCRIPTS, "build", script)]
   args << "--skip-bugs" if script == "build_sft_pairs.rb" && SKIP_BUGS
   ok = system(*args)
   abort "FAILED: #{script}" unless ok
@@ -37,4 +56,11 @@ STEPS.each { |label, script| run_step(label, script) }
 elapsed = Time.now - started_at
 puts
 puts "Done! Datasets in _dataset/ (#{elapsed.round(1)}s)."
-puts "Next: ruby bin/train"
+sft_set = File.join(ROOT, "_dataset", "sft_train_set.jsonl")
+if File.file?(sft_set)
+  iters = recommended_iters(count_entries(sft_set))
+  trained = File.file?(File.join(ROOT, "_mlx", "adapters_qwen3", "adapters.safetensors"))
+  puts "Next: ruby bin/train --iters #{iters}#{trained ? ' --resume' : ''}"
+else
+  puts "Next: ruby bin/train"
+end

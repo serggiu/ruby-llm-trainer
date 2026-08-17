@@ -13,6 +13,11 @@ committing hours of compute.
 | stage 2 SFT — 164 / 41 (auto-split) | 200 | 30 min | ~68 tok/s | 12.4 GB | 1.126 (baseline 1.464 @ iter 1) |
 | stage 3 SFT — 85 / 21 (auto-split) | 100 | ~13 min | ~74 tok/s | 11.3 GB | 0.611 (baseline 0.906 @ iter 1) |
 | stage 4 SFT — 2,183 / 546 (auto-split) | 2,183 | ~2 h 46 m | ~106 tok/s | 15.6 GB | 0.977 (best 0.889 @ iter 1400) |
+| stage 5 SFT — 1,264 / 316 (auto-split) | 1,264 | ~1 h 35 m | ~106 tok/s | 10.4 GB | 1.070 (best 0.708 @ iter 1200) |
+| refresh capsules — 86 / 21 (auto-split) | 100 | ~15 min | ~105 tok/s | 16.9 GB | 1.178 (baseline 1.308 @ iter 1) |
+
+~ 70 tok/s with Battery Saver on
+~ 100 tok/s with Battery Saver off
 
 **Notes (run 1, full slice):**
 
@@ -67,6 +72,37 @@ committing hours of compute.
   module DSL pattern (class + instance methods) and correct string/symbol
   key semantics; 1/3 correct concept with one broken trailing example.
   Best stage result so far.
+
+**Notes (run 5):**
+
+- SFT set 1,580 entries; auto-split: 1,264 train / 316 valid; continued the
+  model with `--resume`.
+- One full epoch (1,264 iters); ~560k tokens trained; 13 checkpoints;
+  ~106 tok/s; peak mem 10.4 GB — lowest of all runs.
+- Val loss improved 0.855 → 0.708 @ iter 1200 (−0.147, the cleanest
+  improvement yet); final train loss 0.568.
+- Sharpest late-run drift of any session: final val 1.070 vs best 0.708
+  (+0.362) — the val-best checkpoint is the one to export.
+- Chat evaluation (3 bootstrap/framework questions, exported checkpoint):
+  2/3 good — a correct component-definition example (inheritance +
+  initializer DSL) and a correct mountable-scaffold answer; 1/3 conflated
+  config-file initializers with the component ordering DSL (`before:`/`after:`).
+  Same signature as earlier runs: concepts right, edge details blur.
+
+**Notes (run 6 — knowledge refresh):**
+
+- Trained on the distilled capsules of all previously used sources
+  (107 entries; 86 train / 21 valid), continuing from the val-best
+  checkpoint of run 5 — nothing lost, just re-anchored.
+- 100 iters ≈ 1.2 epochs; ~105 tok/s; peak mem 16.9 GB — the longest
+  capsule entries sit near the 2048-token cap, which pushes memory up
+  versus the ordinary runs.
+- Val loss improved 1.308 → 1.178 on the held-out capsule entries, with
+  the final train loss at 0.466 (content absorbed).
+- Chat evaluation across all prior sources (6 previously-missed facts):
+  5/6 now answered correctly after the refresh; 1/6 still wrong
+  (once-per-class test setup — the corresponding capsule lacked that
+  fact, curated afterwards for the next refresh).
 
 ### Base-vs-adapter comparison (after the run)
 

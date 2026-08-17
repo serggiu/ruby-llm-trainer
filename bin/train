@@ -90,6 +90,53 @@ def clear_adapter_dir(adapter_dir)
   FileUtils.rm_rf(adapter_dir)
 end
 
+# Parses the most recent session's val evals from the log into a summary:
+# {baseline_val:, best_val:, best_iter:, final_val:, final_iter:} — or nil.
+# Sessions are delimited by the "Starting training..., iters: N" markers;
+# the first eval (iter 1) is the session's pre-training baseline.
+def last_session_val_summary(log_path)
+  return nil unless File.file?(log_path)
+
+  session = nil
+  File.foreach(log_path) do |line|
+    session = [] if line.include?("Starting training..., iters:")
+    m = line.match(/^Iter (\d+): Val loss ([\d.]+)/)
+    session << [m[1].to_i, m[2].to_f] if m && session
+  end
+  return nil if session.nil? || session.empty?
+
+  baseline = session.first
+  best = session.min_by { |_, v| v }
+  final = session.last
+  {
+    baseline_val: baseline[1], best_val: best[1], best_iter: best[0],
+    final_val: final[1], final_iter: final[0],
+  }
+end
+
+# Simple within-session evaluation: how much the session learned (best vs
+# baseline) and whether it drifted late (final vs best). Returns advice lines.
+def assess_session_summary(s)
+  learned = s[:baseline_val] - s[:best_val]
+  drift = s[:final_val] - s[:best_val]
+  lines = []
+
+  if learned > 0.05
+    lines << "learned well — val #{format('%.3f', s[:baseline_val])} → best #{format('%.3f', s[:best_val])} @ iter #{s[:best_iter]} (improved by #{format('%.3f', learned)})"
+  elsif learned < -0.05
+    lines << "little learning — the best val #{format('%.3f', s[:best_val])} is worse than the session start #{format('%.3f', s[:baseline_val])}"
+  else
+    lines << "modest change — best val #{format('%.3f', s[:best_val])} vs session start #{format('%.3f', s[:baseline_val])}"
+  end
+
+  if drift > 0.05
+    lines << "late-run drift — the final val #{format('%.3f', s[:final_val])} is worse than the best by #{format('%.3f', drift)}; bake the val-best checkpoint instead: ruby bin/export --checkpoint #{s[:best_iter]}"
+  else
+    lines << "stable — the final val #{format('%.3f', s[:final_val])} matches the best; the latest adapter is the best one"
+  end
+  lines
+end
+
 DEFAULT_MODEL_CACHE = File.expand_path(
   "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
 )
@@ -269,5 +316,15 @@ if __FILE__ == $PROGRAM_NAME
   ok = run_with_log(plan[:run_cmd], plan[:log_path],
                     env: plan[:watchdog] ? { "WATCHDOG" => "1" } : {},
                     append: plan[:resume])
+
+  if ok
+    s = last_session_val_summary(plan[:log_path])
+    if s
+      puts
+      puts "Best validation loss this session: #{format('%.3f', s[:best_val])} @ iter #{s[:best_iter]} (baseline #{format('%.3f', s[:baseline_val])}, final #{format('%.3f', s[:final_val])})"
+      assess_session_summary(s).each { |line| puts "Session assessment: #{line}" }
+    end
+  end
+
   exit(ok ? 0 : 1)
 end

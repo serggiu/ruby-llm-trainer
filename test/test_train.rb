@@ -210,6 +210,68 @@ Dir.mktmpdir("clear_sandbox") do |d|
   assert !File.exist?(adapter), "clear_adapter_dir removes the adapter dir"
 end
 
+# --- last_session_val_summary: baseline/best/final of the most recent session ---
+Dir.mktmpdir("log_parse") do |d|
+  log = File.join(d, "train.log")
+  File.write(log, <<~LOG)
+    Loading pretrained model
+    Starting training..., iters: 100
+    Iter 1: Val loss 0.906, Val took 51.522s
+    Iter 20: Train loss 1.176, Learning Rate 1.000e-05
+    Iter 100: Val loss 0.611, Val took 51.294s
+    Starting training..., iters: 2183
+    Iter 1: Val loss 1.124, Val took 21.711s
+    Iter 200: Val loss 0.955, Val took 18.337s
+    Iter 1400: Val loss 0.889, Val took 11.652s
+    Iter 2000: Val loss 0.643, Val took 18.316s
+    Iter 2183: Val loss 0.977, Val took 14.556s
+  LOG
+  s = last_session_val_summary(log)
+  assert_equal 1.124, s[:baseline_val], "baseline is the first eval of the last session"
+  assert_equal 0.643, s[:best_val], "best picks the lowest val of the last session"
+  assert_equal 2000, s[:best_iter], "best iter reported alongside the best val"
+  assert_equal 0.977, s[:final_val], "final is the last eval of the last session"
+  assert_equal 2183, s[:final_iter], "final iter reported alongside the final val"
+  assert_nil last_session_val_summary(File.join(d, "missing.log")), "missing log → nil"
+end
+
+# --- last_session_val_summary edge cases ---
+Dir.mktmpdir("log_parse_edges") do |d|
+  File.write(File.join(d, "no_marker.log"), <<~LOG)
+    Iter 1: Val loss 0.906, Val took 51.522s
+    Iter 100: Val loss 0.611, Val took 51.294s
+  LOG
+  assert_nil last_session_val_summary(File.join(d, "no_marker.log")), "no session marker → nil"
+
+  File.write(File.join(d, "no_evals.log"), <<~LOG)
+    Starting training..., iters: 100
+    Iter 20: Train loss 1.176, Learning Rate 1.000e-05
+  LOG
+  assert_nil last_session_val_summary(File.join(d, "no_evals.log")), "session marker without evals → nil"
+end
+
+# --- assess_session_summary: within-session learned + drift verdicts ---
+lines = assess_session_summary(baseline_val: 0.906, best_val: 0.611, best_iter: 100,
+                               final_val: 0.611, final_iter: 100)
+assert lines[0].start_with?("learned well"), "clear improvement verdict"
+assert lines[0].include?("0.906") && lines[0].include?("0.611"), "improvement shows start and best"
+assert lines[0].include?("iter 100"), "improvement shows the best iteration"
+assert lines[1].start_with?("stable"), "final matching the best → stable"
+
+lines = assess_session_summary(baseline_val: 1.124, best_val: 0.643, best_iter: 2000,
+                               final_val: 0.977, final_iter: 2183)
+assert lines[0].start_with?("learned well"), "learned despite late drift"
+assert lines[1].start_with?("late-run drift"), "worse final → drift verdict"
+assert lines[1].include?("--checkpoint 2000"), "drift advice names the val-best checkpoint"
+
+lines = assess_session_summary(baseline_val: 1.000, best_val: 1.100, best_iter: 50,
+                               final_val: 1.100, final_iter: 100)
+assert lines[0].start_with?("little learning"), "regression verdict"
+
+lines = assess_session_summary(baseline_val: 1.000, best_val: 0.980, best_iter: 50,
+                               final_val: 0.980, final_iter: 100)
+assert lines[0].start_with?("modest change"), "small change verdict"
+
 # --- run_with_log tees output to a file ---
 Dir.mktmpdir("log_sandbox") do |d|
   log = File.join(d, "train.log")

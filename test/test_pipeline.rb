@@ -116,6 +116,33 @@ def make_sandbox
     RUBY
     system("git", "add", "-A") or raise "git add failed"
     system(git_env, "git", "commit", "-q", "-m", "fix nil error in Demo.double") or raise "fix commit failed"
+
+    # A bug-fixed file that is later REMOVED from the working tree (simulates
+    # a sparse checkout without that module): its fix commit exists in git
+    # history, but the file is not materialized — the pair must be skipped.
+    File.write(File.join(repo, "lib", "legacy.rb"), <<~RUBY)
+      module Legacy
+        def self.value
+          :buggy
+        end
+      end
+    RUBY
+    system("git", "add", "-A") or raise "git add failed"
+    system(git_env, "git", "commit", "-q", "-m", "add legacy helper") or raise "legacy add failed"
+
+    File.write(File.join(repo, "lib", "legacy.rb"), <<~RUBY)
+      module Legacy
+        def self.value
+          :fixed
+        end
+      end
+    RUBY
+    system("git", "add", "-A") or raise "git add failed"
+    system(git_env, "git", "commit", "-q", "-m", "fix crash in Legacy.value") or raise "legacy fix failed"
+
+    File.delete(File.join(repo, "lib", "legacy.rb"))
+    system("git", "add", "-A") or raise "git add failed"
+    system(git_env, "git", "commit", "-q", "-m", "remove legacy helper") or raise "legacy removal failed"
   end
 
   dir
@@ -131,6 +158,11 @@ begin
          "build prints the recommended iteration count"
   iters = out[/Recommended iterations for a full training session: (\d+)/, 1]
   assert iters && iters.to_i >= 1, "recommendation is a positive integer"
+
+  next_line = out[/Next: ruby bin\/train --iters \d+( --resume)?/, 0]
+  assert next_line, "build prints the full next command with --iters"
+  assert !next_line.include?("--resume"),
+         "no --resume hint when no trained adapter exists (sandbox)"
 
   # --- code context + code dataset ---
   code_md = File.join(sandbox, "code_context", "demo_repo.md")
@@ -177,6 +209,8 @@ begin
   assert humans.any? { |h| h.include?("DemoTest") }, "test → implementation pair present"
   assert humans.any? { |h| h.include?("RSpec.describe Helper") }, "spec → implementation pair present (RSpec)"
   assert humans.any? { |h| h.include?("fix nil error") }, "bug-fix pair mined from git history"
+  assert !humans.any? { |h| h.include?("fix crash in Legacy") },
+         "bug-fix pair skipped when its file is not materialized (sparse scope)"
   assert humans.any? { |h| h.include?("Demo Guide") }, "guide how-to pair present"
 
   # --- RSpec coverage entry in the code dataset ---

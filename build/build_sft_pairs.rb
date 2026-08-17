@@ -335,6 +335,10 @@ def bug_fix_pairs_for(repo, repo_root)
     next if commit.nil? || modified.size != 1
     subject = commit.split("\t", 2)[1].to_s.force_encoding("UTF-8").scrub
     next unless subject =~ FIX_KEYWORDS
+    # Sparse checkouts (rails modules) only materialize some files — bug-fix
+    # pairs must stay scoped to what's actually being trained, so skip fixes
+    # for files that are not in the working tree.
+    next unless File.file?(File.join(repo_root, modified.first))
 
     begin
       sha = commit.split("\t").first
