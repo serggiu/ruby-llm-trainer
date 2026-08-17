@@ -355,6 +355,8 @@ def main
   puts "WIP guides included: #{wip_count}"
   puts "Skipped: #{skipped.map { |f| File.basename(f) }.join(", ")}" unless skipped.empty?
   puts "Total time: #{format_duration(Time.now - started_at)}"
+  puts "Recommended iterations for a full training session: #{recommended_iters(total_entries)}" \
+       " (one epoch — run `ruby bin/train --iters #{recommended_iters(total_entries)}`; the SFT set built next adds pairs on top, so bin/train's auto-split may differ)"
 end
 
 main if __FILE__ == $PROGRAM_NAME

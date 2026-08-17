@@ -81,6 +81,17 @@ def test_file?(rel)
   rel.start_with?("test/", "spec/") || rel.include?("/test/") || rel.include?("/spec/")
 end
 
+# Recommended one-epoch iteration count for a dataset of +total+ entries,
+# mirroring bin/train's auto-split rule (~20% held out for validation, at
+# least 10 when the dataset allows, never more than half):
+# iterations = train entries = total − valid.
+def recommended_iters(total)
+  valid = (total * 0.2).round
+  valid = [valid, 10].max
+  valid = [valid, total / 2].min
+  total - valid
+end
+
 # Returns { file_doc:, classes: [{ name:, kind:, doc:, includes: [], class_methods: [], instance_methods: [] }] }
 # for the given Ruby source. Docs are the real comment blocks directly above
 # each declaration; `:nodoc:` markers and license banners are filtered out.

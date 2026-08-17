@@ -4,17 +4,16 @@
 # Tests for bin/refresh — the knowledge-capsule refresh task. Runs against
 # sandboxes (no model, no MLX needed).
 
-require "rbconfig"
 require "tempfile"
 require "fileutils"
 require_relative "helper"
 
-RUBY = RbConfig.ruby
-SCRIPTS = File.expand_path("..", __dir__)
+# Load the script under test first: SCRIPTS/RUBY come from bin/train (which
+# bin/refresh loads), so defining them here too would re-trigger constant
+# redefinition warnings.
+load File.join(File.expand_path("..", __dir__), "bin", "refresh")
 
 # --- plan building (loaded as a library) ---
-load File.join(SCRIPTS, "bin", "refresh")
-
 def plan_for(*args, data_root: SCRIPTS)
   build_refresh_plan(args, scripts: SCRIPTS, data_root: data_root,
                      model_cache_glob: "/nonexistent/*/tokenizer.json")

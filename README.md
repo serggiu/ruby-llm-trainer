@@ -74,9 +74,15 @@ Options:
 - `--adapter DIR` — adapter output dir (default `_mlx/adapters_qwen3`)
 - `--watchdog` — supervise the run with the memory watchdog (WATCHDOG=1)
 - `--resume` — continue from the latest adapter checkpoint instead of a fresh run
+- `--force` — discard any trained (unexported) state and start fresh from the base model
 - `--restore DIR` — roll back to a saved model state (a snapshot dir), then exit
 - `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
 - `--dry-run` — print the commands without running them
+
+Unless you pass `--resume` or `--force`, `bin/train` **refuses to run over a
+trained model that hasn't been exported yet** — it tells you to either
+continue it (`--resume`) or discard it (`--force`). `--force` snapshots the
+current state first, so a fresh start is still reversible.
 
 Every training run first **snapshots the current model state** to
 `_mlx/snapshots/pre_<slice>_<timestamp>/` — if a session turns out badly, roll

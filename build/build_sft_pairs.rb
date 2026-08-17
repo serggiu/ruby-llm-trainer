@@ -576,6 +576,8 @@ def main
   puts
   puts "Wrote #{total} entries (#{format('%.1f', bytes / 1024.0)} KB, ~#{bytes / 4} tokens) to #{OUTPUT}"
   puts counts.map { |k, v| "#{k}=#{v}" }.join(", ")
+  puts "Recommended iterations for a full training session: #{recommended_iters(total)}" \
+       " (one epoch — run `ruby bin/train --iters #{recommended_iters(total)}`)"
 end
 
 main if __FILE__ == $PROGRAM_NAME

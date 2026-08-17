@@ -12,6 +12,7 @@ committing hours of compute.
 | full (20,000 / 700) | 5,000 | 5 h 52 m | ~99 tok/s | 14.8 GB | 1.249 (best 1.014 @ iter 2800) |
 | stage 2 SFT — 164 / 41 (auto-split) | 200 | 30 min | ~68 tok/s | 12.4 GB | 1.126 (baseline 1.464 @ iter 1) |
 | stage 3 SFT — 85 / 21 (auto-split) | 100 | ~13 min | ~74 tok/s | 11.3 GB | 0.611 (baseline 0.906 @ iter 1) |
+| stage 4 SFT — 2,183 / 546 (auto-split) | 2,183 | ~2 h 46 m | ~106 tok/s | 15.6 GB | 0.977 (best 0.889 @ iter 1400) |
 
 **Notes (run 1, full slice):**
 
@@ -53,6 +54,19 @@ committing hours of compute.
   (a working frozen-time test using the block form), but 2/3 core API facts
   wrong (freeze/travel distinction, `return` semantics) — the distilled
   capsule was curated afterwards with the missed facts.
+
+**Notes (run 4):**
+
+- SFT set 2,729 entries; auto-split: 2,183 train / 546 valid; continued the
+  model with `--resume`.
+- One full epoch (2,183 iters); ~977k tokens trained; 21 checkpoints;
+  ~106 tok/s; peak mem 15.6 GB.
+- Val loss improved 1.124 → 0.977 (best 0.889 @ iter 1400, outlier low 0.643
+  @ 2000); mild late-run wobble, same signature as run 1.
+- Chat evaluation (3 framework-API questions): 2/3 excellent — canonical
+  module DSL pattern (class + instance methods) and correct string/symbol
+  key semantics; 1/3 correct concept with one broken trailing example.
+  Best stage result so far.
 
 ### Base-vs-adapter comparison (after the run)
 

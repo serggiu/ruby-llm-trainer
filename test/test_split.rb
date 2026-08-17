@@ -105,6 +105,13 @@ assert !minitest_coverage.include?("helper_not_a_test"), "helper methods not lis
 plain = "class Foo\n  def bar\n    1\n  end\nend\n"
 assert_nil build_coverage("lib/foo.rb", plain), "no tests means no coverage entry"
 
+# --- 9b. recommended_iters mirrors bin/train's auto-split ---
+assert_equal 2183, recommended_iters(2729), "one epoch = train portion after ~20% holdout"
+assert_equal 1264, recommended_iters(1580), "railties-size dataset"
+assert_equal 164, recommended_iters(205), "small dataset"
+assert_equal [6, 6], [recommended_iters(12), 12 - recommended_iters(12)], "tiny set split"
+assert_equal 1, recommended_iters(1), "single entry"
+
 # --- 10. test_file? path detection (test/ and spec/) ---
 assert test_file?("test/models/room_test.rb"), "test/ paths are test files"
 assert test_file?("spec/models/room_spec.rb"), "spec/ paths are test files"

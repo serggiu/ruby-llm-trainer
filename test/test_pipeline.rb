@@ -124,9 +124,13 @@ end
 sandbox = make_sandbox
 begin
   env = { "LLM_TRAINER_ROOT" => sandbox }
-  ok = system(env, RUBY, File.join(SCRIPTS, "bin", "build"),
-              out: File::NULL, err: File::NULL)
-  assert ok, "bin/build completes successfully in the sandbox"
+  out = IO.popen([env, RUBY, File.join(SCRIPTS, "bin", "build")], err: [:child, :out], &:read)
+  status = $?
+  assert status.success?, "bin/build completes successfully in the sandbox"
+  assert out.include?("Recommended iterations for a full training session: "),
+         "build prints the recommended iteration count"
+  iters = out[/Recommended iterations for a full training session: (\d+)/, 1]
+  assert iters && iters.to_i >= 1, "recommendation is a positive integer"
 
   # --- code context + code dataset ---
   code_md = File.join(sandbox, "code_context", "demo_repo.md")

@@ -6,16 +6,21 @@
 #
 # Usage:
 #   ruby bin/train [--iters 1000] [--slice proper|smoke|full] [--adapter DIR]
-#                  [--watchdog] [--resume] [--model DIR] [--restore DIR] [--dry-run]
+#                  [--watchdog] [--resume] [--force] [--model DIR] [--restore DIR]
+#                  [--dry-run]
 #
 #   --iters N       training iterations (default 1000)
 #   --slice NAME    data slice: smoke (300/50), proper (3000/200), full (20000/700)
 #   --adapter DIR   adapter output dir (default _mlx/adapters_qwen3)
 #   --watchdog      supervise the run with the memory watchdog (WATCHDOG=1)
 #   --resume        continue from the latest adapter checkpoint instead of a fresh run
+#   --force         discard any trained (unexported) state and start fresh from the base
 #   --model DIR     model directory (default: the Qwen3-8B MLX cache)
 #   --restore DIR   roll back to a saved model state (a snapshot dir), then exit
 #   --dry-run       print the commands without running them
+#
+# Without --resume or --force, bin/train refuses to run over a trained model
+# that hasn't been exported yet.
 #
 # Small datasets are handled automatically: when the SFT set is smaller than
 # the slice's train count, ~20% is held out for validation (min 10 entries)
@@ -80,6 +85,11 @@ def restore_adapter(snapshot_dir, adapter_dir)
   FileUtils.cp_r(snapshot_dir, adapter_dir)
 end
 
+# Removes the adapter dir for a fresh --force start.
+def clear_adapter_dir(adapter_dir)
+  FileUtils.rm_rf(adapter_dir)
+end
+
 DEFAULT_MODEL_CACHE = File.expand_path(
   "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
 )
@@ -92,6 +102,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
   adapter = "_mlx/adapters_qwen3"
   watchdog = false
   resume = false
+  force = false
   restore = nil
   dry_run = false
   model = nil
@@ -106,11 +117,14 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
     when "--model"    then model = args.shift
     when "--watchdog" then watchdog = true
     when "--resume"   then resume = true
+    when "--force"    then force = true
     when "--restore"  then restore = args.shift
     when "--dry-run"  then dry_run = true
     else raise ArgumentError, "unknown option: #{opt}"
     end
   end
+
+  raise ArgumentError, "--resume and --force are mutually exclusive" if resume && force
 
   raise ArgumentError, "unknown slice: #{slice} (use #{SLICES.keys.join(', ')})" unless SLICES.key?(slice)
 
@@ -147,7 +161,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
     slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, adapter_dir: File.join(data_root, adapter),
     model: model,
     watchdog: watchdog, resume: resume, resume_file: resume_file, restore: restore,
-    dry_run: dry_run,
+    force: force, dry_run: dry_run,
     lora: lora, build_cmd: build_cmd, run_cmd: run_cmd,
     log_path: File.join(data_root, "_mlx", "train_#{slice}.log"),
   }
@@ -198,6 +212,18 @@ if __FILE__ == $PROGRAM_NAME
     end
   end
 
+  unless plan[:resume] || plan[:force]
+    if File.file?(File.join(plan[:adapter_dir], "adapters.safetensors"))
+      abort <<~MSG
+        Trained model state found in #{plan[:adapter_dir]} that has not been exported yet.
+
+        Continue training it instead:  ruby bin/train --resume
+        Or discard it and start fresh: ruby bin/train --force
+        (The current state is snapshotted to _mlx/snapshots/ before --force clears it.)
+      MSG
+    end
+  end
+
   # Small-dataset handling: if the SFT set is smaller than the slice's train
   # count, the slice would leave nothing for validation — auto-split instead.
   total = count_entries(plan[:sft_set])
@@ -222,6 +248,7 @@ if __FILE__ == $PROGRAM_NAME
   puts "model:   #{plan[:model]}"
   puts "watchdog: #{plan[:watchdog] ? 'on' : 'off'}"
   puts "resume:  #{plan[:resume] ? "on (#{plan[:resume_file]})" : 'off'}"
+  puts "force:   #{plan[:force] ? 'on (fresh start from base)' : 'off'}"
   puts
   puts "$ #{plan[:build_cmd].join(' ')}"
   puts "$ #{plan[:run_cmd].join(' ')}"
@@ -232,6 +259,11 @@ if __FILE__ == $PROGRAM_NAME
   snap = snapshot_adapter(plan[:adapter_dir], plan[:slice],
                           File.join(ROOT, "_mlx", "snapshots"))
   puts "Model state saved to #{snap} (rollback: ruby bin/train --restore #{snap})" if snap
+
+  if plan[:force]
+    clear_adapter_dir(plan[:adapter_dir])
+    puts "Cleared #{plan[:adapter_dir]} — starting fresh from the base model."
+  end
 
   puts "log: #{plan[:log_path]}"
   ok = run_with_log(plan[:run_cmd], plan[:log_path],

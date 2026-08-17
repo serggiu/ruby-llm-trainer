@@ -58,6 +58,11 @@ assert p2[:resume_file].end_with?("_mlx/my_adapter/adapters.safetensors"), "resu
 p3 = plan_for("--model", MODEL, "--restore", "_mlx/snapshots/pre_proper_20260817_120000")
 assert_equal "_mlx/snapshots/pre_proper_20260817_120000", p3[:restore], "--restore parsed"
 
+# --- --force parsing and conflicts ---
+p4 = plan_for("--model", MODEL, "--force")
+assert_equal true, p4[:force], "--force parsed"
+assert_raises(ArgumentError, "--resume and --force conflict rejected") { plan_for("--model", MODEL, "--resume", "--force") }
+
 # --- errors (clear TOKENIZER_MODEL_DIR so the fallbacks are exercised) ---
 old_env = ENV["TOKENIZER_MODEL_DIR"]
 ENV["TOKENIZER_MODEL_DIR"] = ""
@@ -171,6 +176,38 @@ Dir.mktmpdir("small_sft_sandbox") do |sandbox|
   assert status.success?, "bin/train --dry-run succeeds on a small dataset"
   assert out.include?("Auto-split: 164 train / 41 valid"), "auto-split announced with the computed counts"
   assert out.include?("164") && out.include?("41"), "build command carries the auto-split counts"
+end
+
+# --- trained-but-unexported guard: plain run refuses; --force and --resume pass ---
+Dir.mktmpdir("guard_sandbox") do |sandbox|
+  dataset = File.join(sandbox, "_dataset")
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(dataset)
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(dataset, "sft_train_set.jsonl"), "{}\n")
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "trained-weights")
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+
+  out = IO.popen([env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+                  "--dry-run", "--model", MODEL], err: [:child, :out], &:read)
+  assert !$?.success?, "plain bin/train refuses to run over trained state"
+  assert out.include?("Trained model state found"), "error names the trained state"
+  assert out.include?("--resume"), "error offers --resume"
+  assert out.include?("--force"), "error offers --force"
+  assert !out.include?("Errno"), "no raw exception leaks to the user"
+
+  ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+              "--dry-run", "--force", "--model", MODEL, out: File::NULL, err: File::NULL)
+  assert ok, "bin/train --force --dry-run succeeds over trained state"
+end
+
+# --- clear_adapter_dir removes the adapter dir ---
+Dir.mktmpdir("clear_sandbox") do |d|
+  adapter = File.join(d, "adapters_qwen3")
+  FileUtils.mkdir_p(adapter)
+  File.write(File.join(adapter, "adapters.safetensors"), "x")
+  clear_adapter_dir(adapter)
+  assert !File.exist?(adapter), "clear_adapter_dir removes the adapter dir"
 end
 
 # --- run_with_log tees output to a file ---
