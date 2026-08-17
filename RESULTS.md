@@ -64,6 +64,22 @@ hallucinated detail rather than accuracy — the late-run overfitting visible
 in the val curve, confirmed in real answers. **Exported model: checkpoint
 2800.**
 
+### Export finding (2026-08-17): 4-bit fusion loses the adapter — resolved
+
+`mlx_lm.fuse` without `--dequantize` merges the LoRA deltas and then
+re-quantizes the weights back to 4-bit inline — the small deltas are lost in
+that step, and the exported model behaves like the **base** model (chat-test
+of the fused model: it reverted to `<think>`-mode rambling, while the same
+checkpoint answers directly when loaded as an adapter).
+
+**Resolution:** the correct export is two-step — `mlx_lm.fuse --dequantize`
+(fp16, ~16 GB) then `mlx_lm.convert -q --q-bits 4` on the fused weights.
+Quantizing after fusing preserves the adapter, giving a correct 4-bit
+standalone model (~4.6 GB). `bin/export` now does exactly this by default;
+`--dequantize` keeps the fp16 version. Also fixed: `bin/export --checkpoint`
+was not wired into the run (it always fused the latest adapter) — now
+staged, validated, and tested.
+
 ## Adding a run
 
 - **Same machine and model** — add a row to the existing table and extend its

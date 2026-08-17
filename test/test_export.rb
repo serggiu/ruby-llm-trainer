@@ -33,7 +33,9 @@ assert_equal false, p[:dequantize], "dequantize off by default"
 assert_equal false, p[:dry_run], "dry-run off by default"
 assert p[:fuse_cmd].any? { |x| x.include?("mlx_lm.fuse") }, "fuse command uses the venv mlx_lm.fuse"
 assert p[:fuse_cmd].include?("--save-path") && p[:fuse_cmd].include?(p[:out_dir]), "fuse targets the out dir"
-assert !p[:fuse_cmd].include?("--dequantize"), "no --dequantize by default"
+assert p[:fuse_cmd].include?("--dequantize"), "fuse always goes to fp16 first (inline 4-bit fusion loses the adapter)"
+assert p[:convert_cmd].any? { |x| x.include?("mlx_lm.convert") }, "convert command uses the venv mlx_lm.convert"
+assert p[:convert_cmd].include?("-q") && p[:convert_cmd].include?("--q-bits") && p[:convert_cmd].include?("4"), "convert quantizes to 4-bit"
 
 # --- flags ---
 p2 = plan_for("--model", MODEL, "--adapter", "_mlx/my_adapter", "--checkpoint", "2500",
@@ -43,7 +45,7 @@ assert_equal 2500, p2[:checkpoint], "--checkpoint parsed"
 assert_equal "_mlx/model_test", p2[:out], "--out parsed"
 assert_equal true, p2[:dequantize], "--dequantize parsed"
 assert_equal true, p2[:dry_run], "--dry-run parsed"
-assert p2[:fuse_cmd].include?("--dequantize"), "--dequantize lands in the command"
+assert p2[:fuse_cmd].include?("--dequantize"), "--dequantize keeps the fp16 path (still fuses to fp16)"
 
 # --- errors (clear TOKENIZER_MODEL_DIR so the fallbacks are exercised) ---
 old_env = ENV["TOKENIZER_MODEL_DIR"]
@@ -76,10 +78,15 @@ Dir.mktmpdir("export_checkpoint") do |sandbox|
   assert !File.exist?(File.join(tmp, "0003000_adapters.safetensors")), "other checkpoints not copied"
 
   err = assert_raises(ArgumentError, "missing checkpoint rejected") do
-    checkpoint_adapter_dir(adapter_dir, 9999, sandbox)
+    checkpoint_file(adapter_dir, 9999)
   end
   assert err.message.include?("9999"), "error names the missing checkpoint"
   assert err.message.include?("2500"), "error lists the available checkpoints"
+
+  err2 = assert_raises(ArgumentError, "checkpoint_adapter_dir rejects missing checkpoints too") do
+    checkpoint_adapter_dir(adapter_dir, 9999, sandbox)
+  end
+  assert err2.message.include?("9999"), "same error from the staging helper"
 end
 
 # --- missing adapter: friendly failure, not a crash ---
@@ -104,4 +111,34 @@ Dir.mktmpdir("ready_sandbox") do |sandbox|
   ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "export"),
               "--dry-run", "--model", MODEL, out: File::NULL, err: File::NULL)
   assert ok, "bin/export --dry-run succeeds when the adapter exists"
+end
+
+# --- --checkpoint with a missing checkpoint: friendly failure in dry-run ---
+Dir.mktmpdir("no_ckpt_sandbox") do |sandbox|
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "weights")
+  File.write(File.join(adapter_dir, "0002500_adapters.safetensors"), "ckpt-2500")
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  out = IO.popen([env, RbConfig.ruby, File.join(SCRIPTS, "bin", "export"),
+                  "--dry-run", "--checkpoint", "9999", "--model", MODEL],
+                 err: [:child, :out], &:read)
+  status = $?
+  assert !status.success?, "bin/export --checkpoint exits non-zero when the checkpoint is missing"
+  assert out.include?("checkpoint 9999 not found"), "error names the missing checkpoint"
+  assert out.include?("0002500"), "error lists the available checkpoints"
+  assert !out.include?("Errno"), "no raw exception leaks to the user"
+end
+
+# --- --checkpoint with the checkpoint present: dry-run succeeds ---
+Dir.mktmpdir("ckpt_ready_sandbox") do |sandbox|
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "latest")
+  File.write(File.join(adapter_dir, "0002500_adapters.safetensors"), "ckpt-2500")
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "export"),
+              "--dry-run", "--checkpoint", "2500", "--model", MODEL,
+              out: File::NULL, err: File::NULL)
+  assert ok, "bin/export --dry-run --checkpoint succeeds when the checkpoint exists"
 end

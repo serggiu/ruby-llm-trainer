@@ -80,6 +80,14 @@ Options:
 Sessions can be chained with `--resume` (stop, continue later), but a single
 long run is usually better — see [Resuming a run](TRAIN.md#resuming-a-run--and-why-one-long-run-beats-several-chained-ones) in [TRAIN.md](TRAIN.md).
 
+Every `bin/train` run starts from the **base model** with **fresh, randomly
+initialized LoRA weights** — previous training is never loaded implicitly.
+The only way to continue where you left off is `--resume`, which loads the
+latest adapter checkpoint (`_mlx/adapters_qwen3/adapters.safetensors`)
+before training starts. Note that a fresh run saves checkpoints over the
+old ones in the adapter dir — copy the folder first if you want to keep a
+previous run's checkpoints.
+
 `bin/train` needs the SFT set produced by the build step — if it's missing
 (e.g. you haven't run `bin/build` yet), it fails with a message telling you
 to run `ruby bin/build` first.
@@ -141,14 +149,18 @@ Options:
 - `--checkpoint N` — export checkpoint N instead of the latest adapter
 - `--out DIR` — output dir (default `_mlx/model_qwen3_export`)
 - `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
-- `--dequantize` — export fp16 weights (default keeps the base's 4-bit)
+- `--dequantize` — keep the fp16 export instead of the 4-bit default
 - `--dry-run` — print the commands without running them
 
-The exported model keeps the base quantization (4-bit) by default, so it stays
-about the size of the base snapshot; `--dequantize` roughly doubles it. The
-write is atomic: if the export fails, the previous exported model is left
-intact. `bin/export` needs a trained adapter — if it's missing, it tells you
-to run `ruby bin/train` first.
+The default export is **4-bit and correct**: the adapter is fused into an
+fp16 model first, then the fused weights are quantized (`mlx_lm.fuse
+--dequantize` → `mlx_lm.convert -q`). Measured on Qwen3-8B, the naive
+single-step 4-bit fuse re-quantizes inline and loses the adapter entirely —
+the export then behaves like the base model. `--dequantize` skips the
+quantization step and keeps the fp16 model (roughly double the size,
+~16 GB for the 8B). The write is atomic: if the export fails, the previous
+exported model is left intact. `bin/export` needs a trained adapter — if
+it's missing, it tells you to run `ruby bin/train` first.
 
 ## Training recommendation
 

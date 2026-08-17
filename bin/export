@@ -2,12 +2,16 @@
 # frozen_string_literal: true
 
 # Exports the trained LoRA adapter as a new standalone model: fuses the
-# adapter weights into the base model, so the result can be used (or
-# quantized) on its own — no base snapshot + adapter combo needed afterwards.
+# adapter weights into the base model, so the result can be used on its own —
+# no base snapshot + adapter combo needed afterwards.
 #
-# The exported model keeps the base's quantization by default (e.g. 4-bit),
-# so it stays about the size of the base snapshot. Pass --dequantize for an
-# fp16 export instead.
+# The export is a two-step process (measured on Qwen3-8B):
+#   1. mlx_lm.fuse --dequantize   — merge the adapter into an fp16 model
+#   2. mlx_lm.convert -q --q-bits 4 — quantize the FUSED weights to 4-bit
+# Fusing directly to 4-bit (fuse without --dequantize) re-quantizes inline
+# and LOSES the adapter entirely — the export then behaves like the base
+# model. Pass --dequantize to keep the intermediate fp16 export instead
+# (~2x the size).
 #
 # The write is atomic: fusing goes to a temporary directory, and only on
 # success does the temp dir replace the previous export — a failed export
@@ -21,7 +25,7 @@
 #   --checkpoint N  export checkpoint N (e.g. 2500) instead of the latest adapter
 #   --out DIR       output dir (default _mlx/model_qwen3_export)
 #   --model DIR     model directory (default: the Qwen3-8B MLX cache)
-#   --dequantize    export fp16 weights instead of the base quantization
+#   --dequantize    keep the fp16 export (default: fp16-then-4-bit, correct & small)
 #   --dry-run       print the commands without running them
 #
 # Data root: LLM_TRAINER_ROOT env override (used by tests to run in a
@@ -74,32 +78,42 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
   out_dir = File.join(data_root, out)
 
   fuse = File.join(scripts, ".venv", "bin", "mlx_lm.fuse")
+  # Always fuse to fp16 first: inline 4-bit fusion loses the adapter.
   fuse_cmd = [fuse, "--model", model, "--adapter-path", adapter_dir,
-              "--save-path", out_dir]
-  fuse_cmd << "--dequantize" if dequantize
+              "--save-path", out_dir, "--dequantize"]
+
+  convert = File.join(scripts, ".venv", "bin", "mlx_lm.convert")
+  convert_cmd = [convert, "--model", out_dir, "--mlx-path", "#{out_dir}_4bit",
+                 "-q", "--q-bits", "4"]
 
   {
     adapter: adapter, adapter_dir: adapter_dir, out: out, out_dir: out_dir,
     checkpoint: checkpoint, dequantize: dequantize, dry_run: dry_run,
-    model: model, fuse: fuse, fuse_cmd: fuse_cmd,
+    model: model, fuse: fuse, fuse_cmd: fuse_cmd, convert: convert,
+    convert_cmd: convert_cmd,
     log_path: File.join(data_root, "_mlx", "export.log"),
   }
+end
+
+# Returns the path of a numbered checkpoint file, raising ArgumentError
+# (listing the available checkpoints) if it's missing.
+def checkpoint_file(adapter_dir, checkpoint)
+  src = File.join(adapter_dir, format("%07d_adapters.safetensors", checkpoint))
+  return src if File.file?(src)
+
+  available = Dir.glob(File.join(adapter_dir, "*_adapters.safetensors"))
+                .map { |f| f[/\d+(?=_adapters\.safetensors\z)/] }
+                .compact.sort
+  raise ArgumentError, "checkpoint #{checkpoint} not found in #{adapter_dir}" \
+        "#{available.empty? ? '' : " (available: #{available.join(', ')})"}"
 end
 
 # Returns the adapter dir to fuse: the adapter dir itself, or — when a
 # checkpoint is requested — a temporary dir holding that checkpoint copied as
 # adapters.safetensors (mlx_lm.fuse only reads adapters.safetensors) plus the
-# adapter config. Raises ArgumentError if the checkpoint is missing.
+# adapter config.
 def checkpoint_adapter_dir(adapter_dir, checkpoint, tmp_root = Dir.tmpdir)
-  src = File.join(adapter_dir, format("%07d_adapters.safetensors", checkpoint))
-  unless File.file?(src)
-    available = Dir.glob(File.join(adapter_dir, "*_adapters.safetensors"))
-                  .map { |f| f[/\d+(?=_adapters\.safetensors\z)/] }
-                  .compact.sort
-    raise ArgumentError, "checkpoint #{checkpoint} not found in #{adapter_dir}" \
-          "#{available.empty? ? '' : " (available: #{available.join(', ')})"}"
-  end
-
+  src = checkpoint_file(adapter_dir, checkpoint)
   tmp = Dir.mktmpdir("export_adapter", tmp_root)
   FileUtils.cp(src, File.join(tmp, "adapters.safetensors"))
   cfg = File.join(adapter_dir, "adapter_config.json")
@@ -109,13 +123,14 @@ end
 
 # Runs a command, streaming its output to the terminal AND appending it to a
 # log file (so progress can be checked later). Returns true on success.
-def run_with_log(cmd, log_path, env: {})
+# With append: true the log keeps previous content (used for step 2).
+def run_with_log(cmd, log_path, env: {}, append: false)
   reader, writer = IO.pipe
   pid = Process.spawn(env, *cmd, out: writer, err: writer)
   writer.close
 
   FileUtils.mkdir_p(File.dirname(log_path))
-  File.open(log_path, "w") do |log|
+  File.open(log_path, append ? "a" : "w") do |log|
     reader.each_line do |line|
       puts line
       log.write(line)
@@ -140,29 +155,58 @@ if __FILE__ == $PROGRAM_NAME
           "Run `ruby bin/train` first to train one, then retry."
   end
 
+  begin
+    checkpoint_file(plan[:adapter_dir], plan[:checkpoint]) if plan[:checkpoint]
+  rescue ArgumentError => e
+    abort e.message
+  end
+
   puts "adapter:    #{plan[:adapter]}"
   puts "checkpoint: #{plan[:checkpoint] || 'latest'}"
   puts "out:        #{plan[:out]}"
   puts "model:      #{plan[:model]}"
-  puts "dequantize: #{plan[:dequantize] ? 'yes (fp16)' : 'no (keeps base quantization)'}"
+  puts "format:     #{plan[:dequantize] ? 'fp16' : '4-bit (fp16-then-convert, correct)'}"
   puts
   puts "$ #{plan[:fuse_cmd].join(' ')}"
+  puts "$ #{plan[:convert_cmd].join(' ')}" unless plan[:dequantize]
   exit 0 if plan[:dry_run]
 
   cmd = plan[:fuse_cmd].dup
-  tmp_out = "#{plan[:out_dir]}.tmp"
-  FileUtils.rm_rf(tmp_out)
-  cmd[cmd.index("--save-path") + 1] = tmp_out
+  tmp_fused = "#{plan[:out_dir]}.tmp"
+  FileUtils.rm_rf(tmp_fused)
+  cmd[cmd.index("--save-path") + 1] = tmp_fused
+
+  staged = nil
+  if plan[:checkpoint]
+    staged = checkpoint_adapter_dir(plan[:adapter_dir], plan[:checkpoint], ROOT)
+    cmd[cmd.index("--adapter-path") + 1] = staged
+  end
 
   puts "log: #{plan[:log_path]}"
-  ok = run_with_log(cmd, plan[:log_path])
+  begin
+    ok = run_with_log(cmd, plan[:log_path])
+  ensure
+    FileUtils.rm_rf(staged) if staged
+  end
+
+  final_tmp = tmp_fused
+  if ok && !plan[:dequantize]
+    # Step 2: quantize the FUSED (fp16) weights — preserves the adapter.
+    ccmd = plan[:convert_cmd].dup
+    final_tmp = "#{plan[:out_dir]}.tmp_4bit"
+    FileUtils.rm_rf(final_tmp)
+    ccmd[ccmd.index("--model") + 1] = tmp_fused
+    ccmd[ccmd.index("--mlx-path") + 1] = final_tmp
+    ok = run_with_log(ccmd, plan[:log_path], append: true)
+    FileUtils.rm_rf(tmp_fused) if ok
+  end
 
   unless ok
-    puts "export FAILED — previous model at #{plan[:out_dir]} left intact (partial output at #{tmp_out})"
+    puts "export FAILED — previous model at #{plan[:out_dir]} left intact (partial output at #{final_tmp})"
     exit 1
   end
 
   FileUtils.rm_rf(plan[:out_dir])
-  File.rename(tmp_out, plan[:out_dir])
+  File.rename(final_tmp, plan[:out_dir])
   puts "Exported #{plan[:adapter]} into #{plan[:out_dir]} (standalone, no base needed)"
 end
