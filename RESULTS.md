@@ -15,6 +15,10 @@ committing hours of compute.
 | stage 4 SFT — 2,183 / 546 (auto-split) | 2,183 | ~2 h 46 m | ~106 tok/s | 15.6 GB | 0.977 (best 0.889 @ iter 1400) |
 | stage 5 SFT — 1,264 / 316 (auto-split) | 1,264 | ~1 h 35 m | ~106 tok/s | 10.4 GB | 1.070 (best 0.708 @ iter 1200) |
 | refresh capsules — 86 / 21 (auto-split) | 100 | ~15 min | ~105 tok/s | 16.9 GB | 1.178 (baseline 1.308 @ iter 1) |
+| stage 7 SFT — 308 / 77 (auto-split) | 308 | ~19 min | ~111 tok/s | 10.3 GB | 0.923 (baseline 1.489 @ iter 1) |
+| stage 8 SFT — 210 / 53 (auto-split) | 210 | ~15 min | ~85 tok/s | 10.1 GB | 1.080 (best 0.900 @ iter 200) |
+| stage 9 SFT — 247 / 62 (auto-split) | 247 | ~16 min | ~85 tok/s | 9.1 GB | 1.262 (best 1.133 @ iter 200) |
+| refresh capsules — 263 / 66 (auto-split) | 263 | ~20 min | ~85 tok/s | 18.9 GB | 1.108 (best 0.725 @ iter 200) |
 
 ~ 70 tok/s with Battery Saver on
 ~ 100 tok/s with Battery Saver off
@@ -103,6 +107,62 @@ committing hours of compute.
   5/6 now answered correctly after the refresh; 1/6 still wrong
   (once-per-class test setup — the corresponding capsule lacked that
   fact, curated afterwards for the next refresh).
+
+**Notes (run 7):**
+
+- SFT set 385 entries; auto-split: 308 train / 77 valid; continued the
+  model with `--resume`. Bug-fix pairs are now scoped to the module being
+  trained (this run: 0).
+- One full epoch (308 iters); ~125k tokens; ~111 tok/s; peak mem 10.3 GB;
+  ~19 min.
+- Largest improvement of any session: val 1.489 → 0.923 (−0.566); the
+  final adapter equals the best — the first session with no late-run drift.
+- Chat evaluation (3 job-queue questions): 2/3 excellent (exact retry/discard
+  API with options; idiomatic enqueue-assertion example), 1/3 good with one
+  minor fabrication (a nonexistent `job` class macro).
+
+**Notes (run 8):**
+
+- SFT set 263 entries; auto-split: 210 train / 53 valid; continued the
+  model with `--resume`; bug-fix pairs scoped to the module (2).
+- One full epoch (210 iters); ~71k tokens; peak mem 10.1 GB (lowest yet);
+  ~15 min; speed dipped to ~85 tok/s (battery-saver window).
+- Second-largest improvement: val 1.324 → 0.900 @ iter 200 (−0.424), then
+  late-run drift to 1.080 (+0.180) — val-best checkpoint 200 exported.
+- Chat evaluation (3 rich-text questions, exported checkpoint): 1/3
+  excellent (model-side rich-text setup, idiomatic), 1/3 good (editor and
+  attachments concepts, truncated), 1/3 partial (storage schema and
+  sanitizer attribution blurred). Usage surface strong, internals blur.
+
+**Notes (run 9):**
+
+- SFT set 309 entries; auto-split: 247 train / 62 valid; continued the
+  model with `--resume`; bug-fix pairs scoped to the module (0).
+- One full epoch (247 iters); ~85k tokens; peak mem 9.1 GB (lowest of all
+  runs); ~16 min; ~85 tok/s (battery-saver windows).
+- Smallest improvement of the recent stages: val 1.364 → 1.133 @ iter 200
+  (−0.231), then late drift to 1.262 (+0.129) — val-best checkpoint 200.
+- The hardest domain so far (protocol/streaming surface, server-side code
+  only); chat evaluation (3 realtime questions, val-best checkpoint):
+  2/3 excellent (channel definition + stream helpers; connection
+  identification pattern), 1/3 partial (`broadcast_to` semantics blurred).
+
+**Notes (run 10 — knowledge refresh #2):**
+
+- All 7 knowledge capsules (329 entries); auto-split: 263 train / 66 valid;
+  resumed from the previous stage's val-best checkpoint.
+- One epoch (263 iters); ~75k tokens; ~85 tok/s; peak mem 18.9 GB — the
+  longest capsule entries sit near the 2048-token cap.
+- Best val ever recorded: 0.725 @ iter 200 (−0.409 from the 1.134 baseline),
+  then late drift to 1.108; the val-best checkpoint was kept as the next
+  session's starting point.
+- Spot-check after the refresh: curated distinctions re-anchored correctly
+  (time-travel semantics). Two findings: a once-per-class test-setup fact
+  remains wrong after five attempts — logged as a permanent known
+  limitation (a strong model prior beats LoRA at this scale); and a
+  block-return fact absent from the capsules regressed — capsules were
+  curated afterwards to cover it. Knowledge not in a capsule is not
+  protected by refreshes.
 
 ### Base-vs-adapter comparison (after the run)
 
