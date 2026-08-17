@@ -2,7 +2,8 @@
 # frozen_string_literal: true
 
 # Tests for the context-length bounding logic in build_dataset.rb
-# (MAX_CONTEXT_TOKENS, split_text_chunks, split_long_entries).
+# (MAX_CONTEXT_TOKENS, split_text_chunks, split_long_entries) and for the
+# test-coverage extraction (build_coverage, Rails + minitest styles).
 
 require_relative "helper"
 require_relative "../build/build_dataset"
@@ -57,5 +58,90 @@ assert_equal giant, entries4.map { |_, a| a }.join, "giant line reassembles exac
 # --- 6. Empty sides are returned as-is (never dropped) ---
 assert_equal [["", "answer"]], split_long_entries("", "answer"), "empty prompt kept"
 assert_equal [["prompt", ""]], split_long_entries("prompt", ""), "empty answer kept"
+
+# --- 7. Coverage extraction: Rails `test "name"` declarations ---
+rails_code = <<~RUBY
+  class WidgetTest < ActiveSupport::TestCase
+    test "creates a widget" do
+      assert Widget.create
+    end
+
+    test "destroys a widget" do
+      assert true
+    end
+  end
+RUBY
+rails_coverage = build_coverage("test/widget_test.rb", rails_code)
+assert rails_coverage.include?("creates a widget"), "Rails test name captured"
+assert rails_coverage.include?("destroys a widget"), "second Rails test name captured"
+
+# --- 8. Coverage extraction: minitest `def test_name` methods ---
+minitest_code = <<~RUBY
+  class TestWidget < Minitest::Test
+    def setup
+      @widget = Widget.new
+    end
+
+    def test_creates_widget
+      assert @widget.valid?
+    end
+
+    def test_destroys_widget?
+      assert true
+    end
+
+    def helper_not_a_test
+      true
+    end
+  end
+RUBY
+minitest_coverage = build_coverage("test/test_widget.rb", minitest_code)
+assert minitest_coverage.include?("test_creates_widget"), "minitest method captured"
+assert minitest_coverage.include?("test_destroys_widget?"), "minitest method with ? captured"
+assert !minitest_coverage.include?("setup"), "non-test methods not listed"
+assert !minitest_coverage.include?("helper_not_a_test"), "helper methods not listed"
+
+# --- 9. Coverage extraction: no tests → nil (file skipped) ---
+plain = "class Foo\n  def bar\n    1\n  end\nend\n"
+assert_nil build_coverage("lib/foo.rb", plain), "no tests means no coverage entry"
+
+# --- 10. test_file? path detection (test/ and spec/) ---
+assert test_file?("test/models/room_test.rb"), "test/ paths are test files"
+assert test_file?("spec/models/room_spec.rb"), "spec/ paths are test files"
+assert !test_file?("lib/foo.rb"), "lib/ paths are not test files"
+assert !test_file?("app/foo.rb"), "app/ paths are not test files"
+
+# --- 11. Coverage extraction: RSpec `it`/`specify`/`example` blocks ---
+rspec_code = <<~RUBY
+  RSpec.describe Demo do
+    describe "#double" do
+      context "with a number" do
+        it "doubles the input" do
+          expect(Demo.double(2)).to eq(4)
+        end
+
+        it "doesn't raise on nil" do
+          expect(Demo.double(nil)).to be_nil
+        end
+
+        specify "handles zero" do
+          expect(Demo.double(0)).to eq(0)
+        end
+
+        it('handles parens')
+
+        it { is_expected.to be_truthy }
+      end
+    end
+  end
+RUBY
+rspec_coverage = build_coverage("spec/demo_spec.rb", rspec_code)
+assert rspec_coverage.include?("doubles the input"), "RSpec it block captured"
+assert rspec_coverage.include?("doesn't raise on nil"), "apostrophe inside double quotes kept"
+assert rspec_coverage.include?("handles zero"), "specify alias captured"
+assert rspec_coverage.include?("handles parens"), "parenthesized it captured"
+assert !rspec_coverage.include?("#double"), "describe/context headings not listed"
+assert !rspec_coverage.include?("is_expected"), "block-form it without a name not listed"
+assert !rspec_coverage.include?("Demo"), "RSpec.describe not listed"
 
 puts "  (#{entries.size} + #{entries2.size} + #{entries3.size} + #{entries4.size} pairs generated across split cases)"

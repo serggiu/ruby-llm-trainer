@@ -96,6 +96,11 @@ and overwrites them each run. To keep several slices at once (smoke / test /
 full), pass the input file and output dir explicitly:
 `ruby build/build_mlx_data.rb 3000 200 _dataset/sft_train_set.jsonl _mlx/qwen3_proper`
 
+Small datasets are handled automatically by `bin/train`: when the SFT set is
+smaller than the slice's train count, it holds out ~20 % for validation
+(min 10 entries) so training always has a valid set — no manual splitting
+needed.
+
 | File | Format | Used by |
 |---|---|---|
 | `_pretrain/ruby_corpus.jsonl` | `{"text": "..."}` per line | Stage 1 (CPT) — accepted by MLX as-is |
@@ -180,6 +185,19 @@ which loads the latest adapter checkpoint before training; the manual
 equivalent is adding `--resume-adapter-file _mlx/adapters_sft/adapters.safetensors`
 to the `mlx_lm.lora` command above. Checkpoints are saved every 100 iters, so
 a stopped run never loses more than a few minutes of work.
+
+**Rolling back a bad session.** Before every run, `bin/train` snapshots the
+current model state into `_mlx/snapshots/pre_<slice>_<timestamp>/` (the exact
+trained state the session starts from). If a session turns out badly, roll
+back and retry:
+
+```bash
+ruby bin/train --restore _mlx/snapshots/pre_<slice>_<timestamp>
+ruby bin/train --resume ...   # retry the session from the restored state
+```
+
+Each snapshot is ~40 MB (the adapter + its checkpoints); delete old ones once
+a stage is validated and baked.
 
 Prefer one long run over chained sessions whenever you can, for two reasons:
 

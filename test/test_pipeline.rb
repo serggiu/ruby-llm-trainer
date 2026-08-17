@@ -31,6 +31,7 @@ def make_sandbox
   repo = File.join(dir, "_sources", "demo_repo")
   FileUtils.mkdir_p(File.join(repo, "lib"))
   FileUtils.mkdir_p(File.join(repo, "test"))
+  FileUtils.mkdir_p(File.join(repo, "spec"))
   FileUtils.mkdir_p(File.join(repo, "guides", "source"))
 
   File.write(File.join(repo, "lib", "demo.rb"), <<~RUBY)
@@ -43,11 +44,30 @@ def make_sandbox
     end
   RUBY
 
+  File.write(File.join(repo, "lib", "helper.rb"), <<~RUBY)
+    # A helper used by the RSpec spec in the test sandbox.
+    module Helper
+      # Returns :pong.
+      def self.ping
+        :pong
+      end
+    end
+  RUBY
+
   File.write(File.join(repo, "test", "demo_test.rb"), <<~RUBY)
     require "test/unit"
     class DemoTest < Test::Unit::TestCase
       test "double returns twice the input" do
         assert_equal 4, Demo.double(2)
+      end
+    end
+  RUBY
+
+  File.write(File.join(repo, "spec", "helper_spec.rb"), <<~RUBY)
+    require "spec_helper"
+    RSpec.describe Helper do
+      it "pings back" do
+        expect(Helper.ping).to eq(:pong)
       end
     end
   RUBY
@@ -151,8 +171,16 @@ begin
   humans = File.readlines(sft).map { |l| JSON.parse(l)["conversations"][0]["value"] }
   assert humans.any? { |h| h.include?("Demo.double") }, "method-implementation pair present"
   assert humans.any? { |h| h.include?("DemoTest") }, "test → implementation pair present"
+  assert humans.any? { |h| h.include?("RSpec.describe Helper") }, "spec → implementation pair present (RSpec)"
   assert humans.any? { |h| h.include?("fix nil error") }, "bug-fix pair mined from git history"
   assert humans.any? { |h| h.include?("Demo Guide") }, "guide how-to pair present"
+
+  # --- RSpec coverage entry in the code dataset ---
+  cov_humans = File.readlines(code_jsonl).map { |l| JSON.parse(l)["conversations"][0]["value"] }
+  cov_gpts = File.readlines(code_jsonl).map { |l| JSON.parse(l)["conversations"][1]["value"] }
+  spec_idx = cov_humans.index { |h| h.include?("spec/helper_spec.rb") && (h.include?("cover") || h.include?("exercise")) }
+  assert spec_idx, "RSpec spec file gets a coverage entry"
+  assert cov_gpts[spec_idx].include?("pings back"), "coverage entry lists the it block"
 ensure
   FileUtils.remove_entry(sandbox) if sandbox
 end

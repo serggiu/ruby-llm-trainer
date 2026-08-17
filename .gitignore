@@ -4,6 +4,7 @@ Attribution.md
 --skip-bugs/*
 code_context/**/*.md
 docs_context/**/*.md
+summary/*
 _dataset/*
 _mlx/*
 _pretrain/*

@@ -74,8 +74,19 @@ Options:
 - `--adapter DIR` — adapter output dir (default `_mlx/adapters_qwen3`)
 - `--watchdog` — supervise the run with the memory watchdog (WATCHDOG=1)
 - `--resume` — continue from the latest adapter checkpoint instead of a fresh run
+- `--restore DIR` — roll back to a saved model state (a snapshot dir), then exit
 - `--model DIR` — model directory (default: the Qwen3-8B MLX cache)
 - `--dry-run` — print the commands without running them
+
+Every training run first **snapshots the current model state** to
+`_mlx/snapshots/pre_<slice>_<timestamp>/` — if a session turns out badly, roll
+back to the state it started from with `ruby bin/train --restore
+_mlx/snapshots/pre_<slice>_<timestamp>`.
+
+Small datasets are handled automatically: when the SFT set is smaller than
+the slice's train count, `bin/train` holds out ~20% for validation (10
+entries minimum) instead of training without any — so every run keeps a
+generalization signal and a val-best checkpoint to export.
 
 Sessions can be chained with `--resume` (stop, continue later), but a single
 long run is usually better — see [Resuming a run](TRAIN.md#resuming-a-run--and-why-one-long-run-beats-several-chained-ones) in [TRAIN.md](TRAIN.md).
@@ -94,6 +105,24 @@ to run `ruby bin/build` first.
 
 **To train a model on this data** (install MLX, run continued pretraining +
 SFT, evaluate the result), follow [TRAIN.md](TRAIN.md).
+
+## Refresh (`bin/refresh`)
+
+Re-trains the model on the distilled knowledge capsules in `summary/`
+(produced by `tools/build_summary.rb`), continuing from the latest adapter
+(`--resume`) so nothing learned so far is lost — it re-anchors the knowledge
+of sources that were replaced:
+
+```bash
+ruby bin/summarize                        # capsule every repo in _sources/ → summary/
+ruby bin/refresh                          # train on all summary/*.jsonl (200 iters)
+ruby bin/refresh --iters 100              # smaller refresh pass
+ruby bin/refresh --dry-run                # print the commands, don't run
+```
+
+The current model state is snapshotted before the refresh (roll back with
+`ruby bin/train --restore <snapshot>`); the capsule set is auto-split into
+train/valid like any small dataset.
 
 Training summary by DeepSeek V4 Flash:
 > The model is not a student being quizzed and corrected — it's a parrot being shown thousands of correct transcripts and learning to continue them.
@@ -201,7 +230,9 @@ outputs for removed repos are cleaned up.
 
 Walks every `.rb` file in every repository and produces one agent-friendly
 Markdown dump and one ShareGPT dataset per repo: code reproduction, API
-explanation (from the real RDoc comments), and test coverage listings.
+explanation (from the real RDoc comments), and test coverage listings
+(Rails `test "..."`, minitest `def test_...`, and RSpec `it "..."` — from
+`test/` and `spec/` files).
 
 ```bash
 ruby build/build_code_context.rb [sources_dir]
@@ -234,7 +265,7 @@ ruby build/create_dataset.rb [docs_context_dir] [output_dir]
 
 The original single-file converter behind `build_code_context.rb`: turns one
 code-context Markdown dump into a ShareGPT JSONL dataset (code reproduction,
-API explanation, test coverage).
+API explanation, test coverage — Rails, minitest, and RSpec dialects).
 
 **Context-length bounding**: every generated pair is capped at
 `MAX_CONTEXT_TOKENS` (2048 estimated tokens) — answers longer than the cap
@@ -353,17 +384,35 @@ Wraps a training command. By default it is a transparent pass-through
 WATCHDOG=1 ruby tools/run_capped.rb --min-free-gb 4 -- .venv/bin/mlx_lm.lora ...
 ```
 
+### `tools/build_summary.rb` — distilled knowledge capsules
+
+Captures the distilled essence of a source repository (purpose + public API
+of every lib file, from the real RDoc comments) as a compact ShareGPT JSONL
+— a memory capsule for refresh stages. When sources are replaced between
+stages, the model's knowledge of the old source slowly decays; re-train it
+later on the capsule to refresh that knowledge without keeping the full
+source around:
+
+```bash
+ruby tools/build_summary.rb _sources/<repo>          # → summary/<repo>.jsonl
+ruby tools/build_summary.rb _sources/<repo> --max-entries 120
+```
+
+Train on all capsules to re-anchor the old knowledge:
+`ruby bin/refresh` (see [Refresh](#refresh-binrefresh)).
+
 ## Tests
 
 ```bash
 ruby bin/test            # runs every test/test_*.rb; exits non-zero on failure
 ```
 
-Six test files cover the splitting logic, the tokenizer (mechanics always,
+Ten test files cover the splitting logic, the tokenizer (mechanics always,
 golden token-ID tests when a model directory is available — auto-detected
 from the Qwen3-8B MLX cache, or `ruby bin/test --model DIR`), the two
-diagnostic tools, and the build/train/export commands (run against an in-memory
-sandbox — no model or network needed).
+diagnostic tools, the summary/refresh/summarize tasks, and the
+build/train/export commands (run against an in-memory sandbox — no model or
+network needed).
 
 ---
 
@@ -399,11 +448,14 @@ conventions, test commands, and architectural guidance.
 ├── RESULTS.md                  ← Log of training runs (hardware, time, loss)
 ├── bin/build                   ← One-shot data pipeline (docs + code + datasets + SFT)
 ├── bin/train                   ← Rebuild slice + run LoRA training
-├── bin/export                   ← Export the trained adapter as a standalone model
+├── bin/summarize               ← Capsule every repo in _sources/ → summary/
+├── bin/refresh                 ← Re-train on the knowledge capsules (summary/)
+├── bin/export                  ← Export the trained adapter as a standalone model
 ├── bin/test                    ← Runs all tests (test/test_*.rb)
 ├── build/                      ← Pipeline scripts: main.rb + build_*.rb + create_dataset.rb
 ├── test/                       ← Tests: split logic + tokenizer golden values
-├── tools/                      ← tokenizer.rb + TOKENIZER.md + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped)
+├── tools/                      ← tokenizer.rb + TOKENIZER.md + diagnostic helpers (seqlen_stats, find_long, memmon, run_capped, build_summary)
+├── summary/                    ← Distilled knowledge capsules (built by tools/build_summary.rb)
 ├── _sources/                   ← Git clones of the source repositories
 ├── Attribution.md              ← Generated (git-ignored): license table per source
 ├── code_context/               ← Generated: one .md + one dataset per repo

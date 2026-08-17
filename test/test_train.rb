@@ -54,6 +54,10 @@ assert p2[:run_cmd].include?("--iters") && p2[:run_cmd].include?("500"), "iters 
 assert p2[:run_cmd].include?("--resume-adapter-file"), "resume flag in the command"
 assert p2[:resume_file].end_with?("_mlx/my_adapter/adapters.safetensors"), "resume targets the adapter checkpoint"
 
+# --- --restore parsing ---
+p3 = plan_for("--model", MODEL, "--restore", "_mlx/snapshots/pre_proper_20260817_120000")
+assert_equal "_mlx/snapshots/pre_proper_20260817_120000", p3[:restore], "--restore parsed"
+
 # --- errors (clear TOKENIZER_MODEL_DIR so the fallbacks are exercised) ---
 old_env = ENV["TOKENIZER_MODEL_DIR"]
 ENV["TOKENIZER_MODEL_DIR"] = ""
@@ -96,6 +100,77 @@ Dir.mktmpdir("mlx_sandbox") do |sandbox|
   assert_equal 1, File.readlines(valid).size, "valid slice takes the next entry"
   first_msg = JSON.parse(File.readlines(train).first)["messages"]
   assert_equal %w[user assistant], first_msg.map { |m| m["role"] }, "MLX messages format"
+end
+
+# --- snapshot_adapter: copies the current model state ---
+Dir.mktmpdir("snap_sandbox") do |sandbox|
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "weights-v1")
+  File.write(File.join(adapter_dir, "0000100_adapters.safetensors"), "ckpt-v1")
+
+  snap = snapshot_adapter(adapter_dir, "proper", File.join(sandbox, "_mlx", "snapshots"))
+  assert snap, "snapshot created when an adapter exists"
+  assert snap.include?("snapshots/pre_proper_"), "snapshot named pre_<slice>_<timestamp>"
+  assert_equal "weights-v1", File.read(File.join(snap, "adapters.safetensors")), "snapshot carries the weights"
+  assert_equal "ckpt-v1", File.read(File.join(snap, "0000100_adapters.safetensors")), "snapshot carries the checkpoints"
+
+  empty = File.join(sandbox, "_mlx", "no_adapter_yet")
+  assert_nil snapshot_adapter(empty, "proper", File.join(sandbox, "_mlx", "snapshots")),
+             "no snapshot on a first-ever run"
+end
+
+# --- --restore: rolls back to a saved state (subprocess) ---
+Dir.mktmpdir("restore_sandbox") do |sandbox|
+  adapter_dir = File.join(sandbox, "_mlx", "adapters_qwen3")
+  snap = File.join(sandbox, "_mlx", "snapshots", "pre_proper_20260817_120000")
+  FileUtils.mkdir_p(adapter_dir)
+  FileUtils.mkdir_p(snap)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "bad-session-weights")
+  File.write(File.join(snap, "adapters.safetensors"), "good-saved-weights")
+
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  ok = system(env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+              "--restore", snap, "--model", MODEL, out: File::NULL, err: File::NULL)
+  assert ok, "bin/train --restore succeeds"
+  assert_equal "good-saved-weights", File.read(File.join(adapter_dir, "adapters.safetensors")),
+               "adapter dir rolled back to the snapshot"
+end
+
+# --- --restore with a missing snapshot: friendly failure ---
+Dir.mktmpdir("bad_restore_sandbox") do |sandbox|
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  out = IO.popen([env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+                  "--restore", "_mlx/nope", "--model", MODEL], err: [:child, :out], &:read)
+  status = $?
+  assert !status.success?, "bin/train --restore exits non-zero for a missing snapshot"
+  assert out.include?("Snapshot not found"), "error names the missing snapshot"
+  assert !out.include?("Errno"), "no raw exception leaks to the user"
+end
+
+# --- auto-split counts for small datasets ---
+assert_equal [164, 41], auto_split_counts(205), "~20% held out for validation"
+assert_equal [80, 20], auto_split_counts(100), "rounds to 20%"
+assert_equal [10, 10], auto_split_counts(20), "at least 10 valid when the set allows"
+assert_equal [6, 6], auto_split_counts(12), "never more than half for tiny sets"
+assert_equal [2, 1], auto_split_counts(3), "tiny set still leaves some training data"
+assert_equal [1, 0], auto_split_counts(1), "single entry: no validation possible"
+# (auto_split_counts is only called for small sets; large sets keep the
+# requested slice untouched — covered by the defaults test above)
+
+# --- auto-split applied by bin/train on a small dataset (dry-run) ---
+Dir.mktmpdir("small_sft_sandbox") do |sandbox|
+  dataset = File.join(sandbox, "_dataset")
+  FileUtils.mkdir_p(dataset)
+  File.write(File.join(dataset, "sft_train_set.jsonl"),
+             (["{}\n"] * 205).join)
+  env = { "LLM_TRAINER_ROOT" => sandbox, "TOKENIZER_MODEL_DIR" => "" }
+  out = IO.popen([env, RbConfig.ruby, File.join(SCRIPTS, "bin", "train"),
+                  "--dry-run", "--model", MODEL], err: [:child, :out], &:read)
+  status = $?
+  assert status.success?, "bin/train --dry-run succeeds on a small dataset"
+  assert out.include?("Auto-split: 164 train / 41 valid"), "auto-split announced with the computed counts"
+  assert out.include?("164") && out.include?("41"), "build command carries the auto-split counts"
 end
 
 # --- run_with_log tees output to a file ---

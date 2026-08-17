@@ -219,7 +219,7 @@ METHOD_PROMPTS = [
 def build_method_entries(sections, counter)
   entries = []
   sections.each do |rel, code|
-    next if rel.include?("/test/") || rel.start_with?("test/")
+    next if test_file?(rel)
 
     methods = begin
       documented_methods(rel, code)
@@ -252,13 +252,14 @@ TEST_IMPL_PROMPTS = [
 ].freeze
 
 # <repo>/test/models/room_test.rb → <repo>/lib/models/room.rb or <repo>/app/models/room.rb
+# <repo>/spec/models/room_spec.rb → same (RSpec naming).
 def implementation_candidates(test_rel)
-  base = test_rel.sub(/_test\.rb\z/, "")
+  base = test_rel.sub(/_(?:test|spec)\.rb\z/, "")
   dir = File.dirname(base)
   name = File.basename(base)
 
   %w[lib app].map do |root|
-    new_dir = dir.sub(%r{(^|/)test(/|$)}, "\\1#{root}\\2")
+    new_dir = dir.sub(%r{(^|/)(?:test|spec)(/|$)}, "\\1#{root}\\2")
     "#{new_dir}/#{name}.rb"
   end
 end
@@ -266,7 +267,7 @@ end
 def build_test_entries(sections, counter)
   entries = []
   sections.each do |rel, code|
-    next unless rel.include?("/test/") || rel.start_with?("test/")
+    next unless test_file?(rel)
     next if code.length > 15_000
 
     begin

@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ruby bin/train [--iters 1000] [--slice proper|smoke|full] [--adapter DIR]
-#                  [--watchdog] [--resume] [--model DIR] [--dry-run]
+#                  [--watchdog] [--resume] [--model DIR] [--restore DIR] [--dry-run]
 #
 #   --iters N       training iterations (default 1000)
 #   --slice NAME    data slice: smoke (300/50), proper (3000/200), full (20000/700)
@@ -14,7 +14,12 @@
 #   --watchdog      supervise the run with the memory watchdog (WATCHDOG=1)
 #   --resume        continue from the latest adapter checkpoint instead of a fresh run
 #   --model DIR     model directory (default: the Qwen3-8B MLX cache)
+#   --restore DIR   roll back to a saved model state (a snapshot dir), then exit
 #   --dry-run       print the commands without running them
+#
+# Small datasets are handled automatically: when the SFT set is smaller than
+# the slice's train count, ~20% is held out for validation (min 10 entries)
+# so training always has a generalization signal.
 #
 # Data root: LLM_TRAINER_ROOT env override (used by tests to run in a
 # sandbox); the scripts/venv always come from this repository.
@@ -32,6 +37,49 @@ SLICES = {
   "full"   => [20_000, 700],
 }.freeze
 
+# Reserves a held-out validation slice from a dataset too small for the
+# requested slice: ~20% for validation (at least 10 when the dataset allows,
+# never more than half), so mlx-lm always has something to evaluate against.
+# Returns [train_count, valid_count].
+def auto_split_counts(total)
+  valid = (total * 0.2).round
+  valid = [valid, 10].max
+  valid = [valid, total / 2].min
+  [total - valid, valid]
+end
+
+# Line count of a JSONL file (used to detect small datasets).
+def count_entries(path)
+  count = 0
+  File.foreach(path) { count += 1 }
+  count
+end
+
+# Copies the current adapter dir into _mlx/snapshots/pre_<slice>_<timestamp>
+# before a training run starts, so a bad session can be rolled back with
+# --restore. Returns the snapshot path, or nil when there is nothing to
+# snapshot yet (first run).
+def snapshot_adapter(adapter_dir, slice, snapshots_root)
+  return nil unless File.file?(File.join(adapter_dir, "adapters.safetensors"))
+
+  snap = File.join(snapshots_root, "pre_#{slice}_#{Time.now.strftime('%Y%m%d_%H%M%S')}")
+  FileUtils.mkdir_p(File.dirname(snap))
+  FileUtils.cp_r(adapter_dir, snap)
+  snap
+end
+
+# Restores a snapshot into the adapter dir (replacing whatever is there).
+# Aborts with a friendly message if the snapshot is missing or incomplete.
+def restore_adapter(snapshot_dir, adapter_dir)
+  unless File.directory?(snapshot_dir) && File.file?(File.join(snapshot_dir, "adapters.safetensors"))
+    abort "Snapshot not found: #{snapshot_dir}\n" \
+          "(expected adapters.safetensors inside it — check the path and retry)"
+  end
+  FileUtils.rm_rf(adapter_dir)
+  FileUtils.mkdir_p(File.dirname(adapter_dir))
+  FileUtils.cp_r(snapshot_dir, adapter_dir)
+end
+
 DEFAULT_MODEL_CACHE = File.expand_path(
   "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B-MLX-4bit/snapshots/*/tokenizer.json"
 )
@@ -44,6 +92,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
   adapter = "_mlx/adapters_qwen3"
   watchdog = false
   resume = false
+  restore = nil
   dry_run = false
   model = nil
 
@@ -57,6 +106,7 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
     when "--model"    then model = args.shift
     when "--watchdog" then watchdog = true
     when "--resume"   then resume = true
+    when "--restore"  then restore = args.shift
     when "--dry-run"  then dry_run = true
     else raise ArgumentError, "unknown option: #{opt}"
     end
@@ -94,8 +144,10 @@ def build_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE
 
   {
     iters: iters, slice: slice, train_count: train_count, valid_count: valid_count,
-    slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, model: model,
-    watchdog: watchdog, resume: resume, resume_file: resume_file, dry_run: dry_run,
+    slice_dir: slice_dir, sft_set: sft_set, adapter: adapter, adapter_dir: File.join(data_root, adapter),
+    model: model,
+    watchdog: watchdog, resume: resume, resume_file: resume_file, restore: restore,
+    dry_run: dry_run,
     lora: lora, build_cmd: build_cmd, run_cmd: run_cmd,
     log_path: File.join(data_root, "_mlx", "train_#{slice}.log"),
   }
@@ -128,6 +180,12 @@ if __FILE__ == $PROGRAM_NAME
     abort e.message
   end
 
+  if plan[:restore]
+    restore_adapter(plan[:restore], plan[:adapter_dir])
+    puts "Restored #{plan[:restore]} → #{plan[:adapter_dir]}"
+    exit 0
+  end
+
   unless File.exist?(plan[:sft_set])
     abort "Training data not found: #{plan[:sft_set]}\n" \
           "Run `ruby bin/build` first to generate the SFT set, then retry."
@@ -140,9 +198,25 @@ if __FILE__ == $PROGRAM_NAME
     end
   end
 
+  # Small-dataset handling: if the SFT set is smaller than the slice's train
+  # count, the slice would leave nothing for validation — auto-split instead.
+  total = count_entries(plan[:sft_set])
+  train_count = plan[:train_count]
+  valid_count = plan[:valid_count]
+  if total <= train_count
+    train_count, valid_count = auto_split_counts(total)
+    cmd = plan[:build_cmd].dup
+    cmd[2] = train_count.to_s
+    cmd[3] = valid_count.to_s
+    plan[:build_cmd] = cmd
+    puts "SFT set has #{total} entries — smaller than the #{plan[:slice]} slice (#{plan[:train_count]} train / #{plan[:valid_count]} valid)."
+    puts "Auto-split: #{train_count} train / #{valid_count} valid (~20% held out)."
+    puts "(Train all of it with: ruby bin/build/build_mlx_data.rb #{total} 0 ...)" if valid_count.zero?
+  end
+
   abort ".venv not found — follow TRAIN.md setup first" unless File.exist?(plan[:lora])
 
-  puts "slice:   qwen3_#{plan[:slice]} (#{plan[:train_count]} train / #{plan[:valid_count]} valid)"
+  puts "slice:   qwen3_#{plan[:slice]} (#{train_count} train / #{valid_count} valid)"
   puts "iters:   #{plan[:iters]}"
   puts "adapter: #{plan[:adapter]}"
   puts "model:   #{plan[:model]}"
@@ -154,6 +228,10 @@ if __FILE__ == $PROGRAM_NAME
   exit 0 if plan[:dry_run]
 
   abort "slice build failed" unless system(*plan[:build_cmd])
+
+  snap = snapshot_adapter(plan[:adapter_dir], plan[:slice],
+                          File.join(ROOT, "_mlx", "snapshots"))
+  puts "Model state saved to #{snap} (rollback: ruby bin/train --restore #{snap})" if snap
 
   puts "log: #{plan[:log_path]}"
   ok = run_with_log(plan[:run_cmd], plan[:log_path],

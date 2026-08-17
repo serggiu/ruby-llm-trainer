@@ -17,7 +17,9 @@ ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
 #   - code reproduction  — the full, verbatim Ruby source (one per file)
 #   - API explanation    — purpose + public API, assembled from the real RDoc
 #                          comments and declarations in the file (lib files only)
-#   - test coverage      — the real `test "..."` descriptions (test files only)
+#   - test coverage      — the real `test "..."` (Rails), `it "..."` (RSpec),
+#                          or `def test_...` (minitest) declarations; test and
+#                          spec files only
 #
 # Every entry is capped at MAX_CONTEXT_TOKENS (2048 estimated tokens):
 # answers longer than the cap are split into as many "(part i/n)" pairs as
@@ -68,7 +70,16 @@ SELF_CLASS    = /^\s*class\s*<<\s*self\b/
 DEF_DECL      = /^\s*def\s+(?:self\.)?([a-zA-Z_]\w*[!?=]?)(\s*\([^;]*\))?.*$/
 DEF_SELF      = /^\s*def\s+self\./
 INCLUDE_DECL  = /^\s*(?:include|extend|prepend)\s+([A-Z][\w:]*)/
-TEST_DECL     = /^\s*test\s+["']([^"']+)["']/
+# Test declarations, three dialects: Rails `test "name"` blocks, RSpec
+# `it`/`specify`/`example "name"` blocks (parens allowed), and minitest
+# `def test_name` methods. Quotes are matched pair-wise so apostrophes inside
+# double-quoted names ("doesn't raise") are kept.
+TEST_DECL     = /^\s*(?:test|it|specify|example)\s*\(?\s*(?:"([^"]+)"|'([^']+)')|^\s*def\s+(test_[a-z_]\w*[!?=]?)/
+
+# True for test/spec file paths: Rails `test/`, minitest `test/`, RSpec `spec/`.
+def test_file?(rel)
+  rel.start_with?("test/", "spec/") || rel.include?("/test/") || rel.include?("/spec/")
+end
 
 # Returns { file_doc:, classes: [{ name:, kind:, doc:, includes: [], class_methods: [], instance_methods: [] }] }
 # for the given Ruby source. Docs are the real comment blocks directly above
@@ -241,9 +252,10 @@ def build_explanation(path, code)
   lines.join("\n")
 end
 
-# Builds the "test coverage" answer from the real `test "..."` descriptions.
+# Builds the "test coverage" answer from the real test declarations:
+# Rails `test "..."`, RSpec `it "..."`, or minitest `def test_...`.
 def build_coverage(path, code)
-  tests = code.scan(TEST_DECL).flatten
+  tests = code.scan(TEST_DECL).flatten.compact
   return nil if tests.empty?
 
   lines = []
@@ -399,7 +411,7 @@ def main
   counter = 0
 
   sections.each do |path, code|
-    is_test = path.include?("/test/")
+    is_test = test_file?(path)
 
     # 1. Code reproduction entry
     prompt_pool = is_test ? TEST_PROMPTS : CODE_PROMPTS

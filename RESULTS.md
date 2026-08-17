@@ -10,8 +10,10 @@ committing hours of compute.
 | Dataset | Iters | Total time | Avg speed | Peak mem | Final val loss |
 |---|---|---|---|---|---|
 | full (20,000 / 700) | 5,000 | 5 h 52 m | ~99 tok/s | 14.8 GB | 1.249 (best 1.014 @ iter 2800) |
+| stage 2 SFT — 164 / 41 (auto-split) | 200 | 30 min | ~68 tok/s | 12.4 GB | 1.126 (baseline 1.464 @ iter 1) |
+| stage 3 SFT — 85 / 21 (auto-split) | 100 | ~13 min | ~74 tok/s | 11.3 GB | 0.611 (baseline 0.906 @ iter 1) |
 
-**Notes:**
+**Notes (run 1, full slice):**
 
 - Batch size 1, lr 1e-5, max-seq-length 2048, eval every 200 iters,
   checkpoints every 100 iters (50 saved).
@@ -26,6 +28,31 @@ committing hours of compute.
 - Adapter size: 39 MB (LoRA weights only; base model untouched).
 - Toolchain: Python 3.12 (`.venv`), mlx 0.32.0 / mlx-lm 0.31.3, Ruby 4.0.5;
   model snapshot `383413e9…`.
+
+**Notes (run 2):**
+
+- SFT set 205 entries; auto-split kicked in (smaller than the proper slice):
+  164 train / 41 valid.
+- One epoch (200 iters ≈ 1.2 passes); speed lower (~68 tok/s) because the
+  short examples make per-step overhead dominate.
+- Val loss improved 1.464 → 1.126 on the held-out entries — real
+  generalization, not memorization.
+- Chat evaluation (3 testing-API questions): 2/3 excellent (writes idiomatic
+  tests with correct assertion-argument order; correct value-vs-identity
+  assertion semantics), 1/3 good but hallucinated a non-existent
+  before/after class-level API for once-per-class setup. Style transfer from
+  the source is visible (the source's distinctive code conventions).
+
+**Notes (run 3):**
+
+- SFT set 106 entries; auto-split: 85 train / 21 valid; continued the model
+  with `--resume`.
+- 100 iters ≈ 1.2 epochs; ~74 tok/s; peak mem 11.3 GB.
+- Val loss improved 0.906 → 0.611 on the held-out entries.
+- Chat evaluation (3 time-travel API questions): code generation excellent
+  (a working frozen-time test using the block form), but 2/3 core API facts
+  wrong (freeze/travel distinction, `return` semantics) — the distilled
+  capsule was curated afterwards with the missed facts.
 
 ### Base-vs-adapter comparison (after the run)
 

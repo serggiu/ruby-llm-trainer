@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Summarizes every repository under _sources/ into distilled knowledge
+# capsules in summary/ (one <repo>.jsonl per repository), via
+# tools/build_summary.rb. Run this before replacing sources so the model's
+# knowledge of them can be refreshed later with `ruby bin/refresh`.
+#
+# Usage:
+#   ruby bin/summarize [--max-entries N]
+#
+# Flags are forwarded to tools/build_summary.rb. A repository with nothing
+# distillable is skipped with a warning (the rest still get summarized); the
+# exit status is non-zero if any repository failed.
+
+require "rbconfig"
+require "fileutils"
+
+SCRIPTS = File.expand_path("..", __dir__) # this repository (scripts, tools)
+ROOT = ENV["LLM_TRAINER_ROOT"] || SCRIPTS # where _sources/, summary/ live
+RUBY = RbConfig.ruby
+
+SUMMARY_TOOL = File.join(SCRIPTS, "tools", "build_summary.rb")
+SOURCES_ROOT = File.join(ROOT, "_sources")
+SUMMARY_DIR  = File.join(ROOT, "summary")
+FLAGS = ARGV.select { |a| a.start_with?("--") }
+
+abort "Sources dir not found: #{SOURCES_ROOT}" unless File.directory?(SOURCES_ROOT)
+
+repos = Dir.glob(File.join(SOURCES_ROOT, "*"))
+           .select { |p| File.directory?(p) }
+           .reject { |p| File.basename(p).start_with?(".") }
+           .sort
+abort "No repositories found under #{SOURCES_ROOT}" if repos.empty?
+
+FileUtils.mkdir_p(SUMMARY_DIR)
+
+failed = []
+repos.each do |repo|
+  puts "=== #{File.basename(repo)} ==="
+  ok = system(RUBY, SUMMARY_TOOL, repo, SUMMARY_DIR, *FLAGS)
+  failed << File.basename(repo) unless ok
+end
+
+if failed.any?
+  warn "FAILED to summarize: #{failed.join(', ')}"
+  exit 1
+end
+
+puts "Done — capsules in #{SUMMARY_DIR} (#{repos.size} repositories)"

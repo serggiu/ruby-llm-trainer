@@ -182,7 +182,7 @@ def build_repo_jsonl(repo, files)
     end
     next if code.strip.empty?
 
-    is_test = rel.start_with?("test/") || rel.include?("/test/")
+    is_test = test_file?(rel)
 
     # 1. Code reproduction entry
     pool = is_test ? TEST_PROMPTS : CODE_PROMPTS

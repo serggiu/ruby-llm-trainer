@@ -1,0 +1,135 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Refreshes the trained model's memory by training (--resume) on the distilled
+# knowledge capsules in summary/ (produced by tools/build_summary.rb).
+#
+# When sources are replaced between stages, the model's knowledge of the old
+# source slowly decays. Each replaced source should leave a capsule behind
+# (summary/<repo>.jsonl); this task re-trains the model on all of them,
+# continuing from the latest adapter (--resume) so nothing learned so far is
+# lost — the refresh just re-anchors the old knowledge.
+#
+# The current model state is snapshotted before the refresh, exactly like
+# bin/train (roll back with `ruby bin/train --restore <snapshot>`).
+#
+# Usage:
+#   ruby bin/refresh [--iters N] [--adapter DIR] [--watchdog] [--model DIR] [--dry-run]
+#
+#   --iters N       refresh iterations (default 200)
+#   --adapter DIR   adapter output dir (default _mlx/adapters_qwen3)
+#   --watchdog      supervise the run with the memory watchdog (WATCHDOG=1)
+#   --model DIR     model directory (default: the Qwen3-8B MLX cache)
+#   --dry-run       print the commands without running them
+
+load File.join(File.expand_path("..", __dir__), "bin", "train") # SCRIPTS/ROOT/RUBY + shared helpers (guard keeps train's main out)
+
+# Parses ARGV and builds the refresh plan. Raises ArgumentError on bad input.
+# Returns a hash with the capsule/command details (see test/test_refresh.rb).
+def build_refresh_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MODEL_CACHE)
+  iters = 200
+  adapter = "_mlx/adapters_qwen3"
+  watchdog = false
+  dry_run = false
+  model = nil
+
+  args = argv.dup
+  until args.empty?
+    opt = args.shift
+    case opt
+    when "--iters"    then iters = Integer(args.shift)
+    when "--adapter"  then adapter = args.shift
+    when "--model"    then model = args.shift
+    when "--watchdog" then watchdog = true
+    when "--dry-run"  then dry_run = true
+    else raise ArgumentError, "unknown option: #{opt}"
+    end
+  end
+
+  model ||= ENV["TOKENIZER_MODEL_DIR"]
+  if model.nil? || model.empty?
+    cached = Dir.glob(model_cache_glob).first
+    raise ArgumentError, "no model found — pass --model DIR" if cached.nil?
+    model = File.dirname(cached)
+  end
+
+  summary_dir = File.join(data_root, "summary")
+  capsules = Dir.glob(File.join(summary_dir, "*.jsonl")).sort
+  raise ArgumentError, "no knowledge capsules found in #{summary_dir}\n" \
+                       "Run `ruby tools/build_summary.rb <repo>` on a replaced source first." if capsules.empty?
+
+  adapter_dir = File.join(data_root, adapter)
+  combined = File.join(data_root, "_mlx", "summary_combined.jsonl")
+  slice_dir = File.join(data_root, "_mlx", "qwen3_refresh")
+
+  lora = File.join(scripts, ".venv", "bin", "mlx_lm.lora")
+  train_cmd = [lora, "--model", model, "--train", "--data", slice_dir,
+               "--adapter-path", adapter_dir,
+               "--iters", iters.to_s, "--batch-size", "1", "--learning-rate", "1e-5",
+               "--steps-per-report", "20", "--steps-per-eval", "200",
+               "--val-batches", "10", "--max-seq-length", "2048",
+               "--resume-adapter-file", File.join(adapter_dir, "adapters.safetensors")]
+  run_cmd = [RUBY, File.join(scripts, "tools", "run_capped.rb"), "--", *train_cmd]
+
+  {
+    iters: iters, adapter: adapter, adapter_dir: adapter_dir, model: model,
+    watchdog: watchdog, dry_run: dry_run,
+    capsules: capsules, combined: combined, slice_dir: slice_dir,
+    lora: lora, run_cmd: run_cmd,
+    log_path: File.join(data_root, "_mlx", "train_refresh.log"),
+  }
+end
+
+# Concatenates every capsule into one ShareGPT JSONL (the input format
+# build_mlx_data.rb consumes).
+def write_combined_capsules(capsules, combined)
+  FileUtils.mkdir_p(File.dirname(combined))
+  File.open(combined, "w:UTF-8") do |out|
+    capsules.each do |capsule|
+      File.foreach(capsule) { |line| out.write(line) }
+    end
+  end
+end
+
+if __FILE__ == $PROGRAM_NAME
+  begin
+    plan = build_refresh_plan(ARGV, scripts: SCRIPTS, data_root: ROOT)
+  rescue ArgumentError => e
+    abort e.message
+  end
+
+  unless File.file?(File.join(plan[:adapter_dir], "adapters.safetensors"))
+    abort "No trained model found in #{plan[:adapter_dir]}\n" \
+          "Run `ruby bin/train` first to train one, then retry."
+  end
+
+  total = 0
+  plan[:capsules].each { |c| total += count_entries(c) }
+  train_count, valid_count = auto_split_counts(total)
+
+  puts "capsules: #{plan[:capsules].map { |c| File.basename(c) }.join(', ')}"
+  puts "entries:  #{total} (#{train_count} train / #{valid_count} valid)"
+  puts "iters:    #{plan[:iters]}"
+  puts "adapter:  #{plan[:adapter]}"
+  puts "model:    #{plan[:model]}"
+  puts "watchdog: #{plan[:watchdog] ? 'on' : 'off'}"
+  puts
+  build_cmd = [RUBY, File.join(SCRIPTS, "build", "build_mlx_data.rb"),
+               train_count.to_s, valid_count.to_s, plan[:combined], plan[:slice_dir],
+               "--max-chars=80000"]
+  puts "$ #{build_cmd.join(' ')}"
+  puts "$ #{plan[:run_cmd].join(' ')}"
+  exit 0 if plan[:dry_run]
+
+  write_combined_capsules(plan[:capsules], plan[:combined])
+  abort "slice build failed" unless system(*build_cmd)
+
+  snap = snapshot_adapter(plan[:adapter_dir], "refresh", File.join(ROOT, "_mlx", "snapshots"))
+  puts "Model state saved to #{snap} (rollback: ruby bin/train --restore #{snap})" if snap
+
+  puts "log: #{plan[:log_path]}"
+  ok = run_with_log(plan[:run_cmd], plan[:log_path],
+                    env: plan[:watchdog] ? { "WATCHDOG" => "1" } : {},
+                    append: true)
+  exit(ok ? 0 : 1)
+end
