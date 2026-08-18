@@ -114,6 +114,25 @@ def last_session_val_summary(log_path)
   }
 end
 
+# If the last session drifted after its best eval (final val worse than the
+# val-best), copy that best checkpoint over adapters.safetensors so the next
+# --resume continues from the best-known state instead of the overfit final.
+# Returns a message to print, or nil when there is nothing better to use
+# (no log, no evals, no saved checkpoint, or the final already IS the best).
+def resume_from_val_best(log_path, adapter_dir)
+  s = last_session_val_summary(log_path)
+  return nil if s.nil? || s[:best_iter] < 100 # first checkpoint is saved at iter 100
+
+  best_file = File.join(adapter_dir, format("%07d_adapters.safetensors", s[:best_iter]))
+  live = File.join(adapter_dir, "adapters.safetensors")
+  return nil unless File.file?(best_file) && File.file?(live)
+  return nil if FileUtils.compare_file(best_file, live) # no drift — final IS the best
+
+  FileUtils.cp(best_file, live)
+  "Resuming from the val-best checkpoint (iter #{s[:best_iter]}, val #{format('%.3f', s[:best_val])}) " \
+    "instead of the drifted final (val #{format('%.3f', s[:final_val])})."
+end
+
 # Simple within-session evaluation: how much the session learned (best vs
 # baseline) and whether it drifted late (final vs best). Returns advice lines.
 def assess_session_summary(s)
@@ -257,6 +276,8 @@ if __FILE__ == $PROGRAM_NAME
       abort "No checkpoint to resume from: #{plan[:resume_file]}\n" \
             "Run `ruby bin/train` once without --resume to create it, then retry."
     end
+    msg = resume_from_val_best(plan[:log_path], plan[:adapter_dir])
+    puts msg if msg
   end
 
   unless plan[:resume] || plan[:force]

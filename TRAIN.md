@@ -176,6 +176,16 @@ needlessly: on a 4-bit model, mlx-lm's quantized attention materializes O(n²)
 attention scores — at 4096 a validation pass spikes to ~40+ GB peak on an 8B,
 while 2048 stays at ~13-14 GB.
 
+**Train/valid split is seeded-shuffled.** Before slicing, `build_mlx_data.rb`
+shuffles the SFT entries with a fixed seed (20240818), so the ~80/20
+cut gets a representative mix of the whole set instead of the
+alphabetically-last entries — every topic appears in both slices. Override
+with `--shuffle-seed=N` (`0` disables). `bin/refresh` shuffles its combined
+capsules with the same seed before slicing, for the same reason. Because the
+split is deterministic, re-running a build reproduces the exact same
+train/valid sets; note that a shuffled split's val loss is not directly
+comparable to an unshuffled one from an older build.
+
 #### Resuming a run — and why one long run beats several chained ones
 
 Training can be split into several sessions: run some iterations, stop

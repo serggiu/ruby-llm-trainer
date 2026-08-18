@@ -19,6 +19,10 @@ committing hours of compute.
 | stage 8 SFT — 210 / 53 (auto-split) | 210 | ~15 min | ~85 tok/s | 10.1 GB | 1.080 (best 0.900 @ iter 200) |
 | stage 9 SFT — 247 / 62 (auto-split) | 247 | ~16 min | ~85 tok/s | 9.1 GB | 1.262 (best 1.133 @ iter 200) |
 | refresh capsules — 263 / 66 (auto-split) | 263 | ~20 min | ~85 tok/s | 18.9 GB | 1.108 (best 0.725 @ iter 200) |
+| stage 11 SFT — 2,816 / 704 (auto-split) | 2,816 | ~4.8 h | ~88 tok/s | 13.1 GB | 1.173 (best 0.824 @ iter 2600) |
+| stage 12 SFT — 458 / 115 (auto-split) | 458 | ~28 min | ~85 tok/s | 10.4 GB | 1.084 (best 0.930 @ iter 400) |
+| stage 13 SFT — 346 / 86 (auto-split) | 346 | ~25 min | ~85 tok/s | 11.1 GB | 0.890 (baseline 1.334 @ iter 1) |
+| stage 14 SFT — 4,474 / 1,119 (auto-split) | 4,474 | ~5.7 h | ~105 tok/s | 12.3 GB | 0.787 (best 0.751 @ iter 800) |
 
 ~ 70 tok/s with Battery Saver on
 ~ 100 tok/s with Battery Saver off
@@ -163,6 +167,89 @@ committing hours of compute.
   block-return fact absent from the capsules regressed — capsules were
   curated afterwards to cover it. Knowledge not in a capsule is not
   protected by refreshes.
+
+**Notes (run 11 — two modules in one stage):**
+
+- SFT set 3,520 entries; auto-split: 2,816 train / 704 valid; continued the
+  model with `--resume`; bug-fix pairs scoped to the materialized modules.
+- One full epoch (2,816 iters); 1.48M tokens; ~4.8 h; peak mem 13.1 GB;
+  speed cycled 71–111 tok/s with power state (time, not learning).
+- Strongest training-set eval of any stage: val 1.193 → 0.824 @ iter 2600
+  (−0.369, on a 704-entry held-out set), with the familiar signature:
+  two mid-run wobbles, then late drift to 1.173 — val-best checkpoint 2600.
+- Chat evaluation (3 controller/routing/view questions, val-best
+  checkpoint): 3/3 excellent — textbook CRUD with strong parameters and
+  before_action scoping, nested resources with the generated route list,
+  and the render-vs-redirect distinction with a partial example. The
+  strongest chat result of any stage.
+
+**Notes (run 12):**
+
+- SFT set 573 entries; auto-split: 458 train / 115 valid; continued the
+  model with `--resume`; bug-fix pairs scoped to the module (3).
+- One full epoch (458 iters); ~169k tokens; peak mem 10.4 GB; ~28 min;
+  speed dipped to ~67 tok/s at the end (battery-saver window).
+- Solid improvement: val 1.279 → 0.930 @ iter 400 (−0.349), then late
+  drift to 1.084 (+0.154) — val-best checkpoint 400.
+- Chat evaluation (3 file-attachment questions, val-best checkpoint):
+  2/3 good (attach/purge macros and the variant API exact), 1/3 with a
+  fabricated backend list (services beyond the core Disk/S3/GCS/Azure set).
+  Usage surface strong, internals blur.
+
+**Notes (run 13 — two modules in one stage):**
+
+- SFT set 432 entries; auto-split: 346 train / 86 valid; continued the
+  model with `--resume`; bug-fix pairs scoped (0).
+- One full epoch (346 iters); ~127k tokens; ~25 min; peak mem 11.1 GB;
+  ~85 tok/s (battery-saver windows).
+- Third-largest improvement: val 1.334 → 0.890 (−0.444); NO late-run
+  drift — final equals best, the second fully-stable session (the other
+  was also a small, well-scoped module stage).
+- Chat evaluation (3 mail questions, final adapter): 1/3 good (mailer
+  class, views, delivery), 2/3 partial — preview API signatures garbled
+  and the inbound-routing DSL not delivered. The model has also begun
+  mimicking the distilled "## API" answer style of the capsules, at times
+  inventing signatures in that format — a format side-effect to watch.
+
+**Notes (run 14):**
+
+- SFT set 5,593 entries (the largest of any stage); auto-split:
+  4,474 train / 1,119 valid; continued with `--resume`; scoped bug pairs
+  (15). Highest method-implementation share of any module (1,118 pairs).
+- One full epoch (4,474 iters); 2.19M tokens; ~5.7 h; peak mem 12.3 GB;
+  steady ~105 tok/s.
+- Strongest generalization of any stage: val 1.024 → 0.751 @ iter 800
+  (−0.273) on the largest held-out set (1,119 entries); the late drift was
+  the mildest ever (+0.036) — best training-set eval and best final of all
+  runs. Val-best checkpoint 800 kept as the next session's starting point.
+- Chat evaluation (3 ORM questions, val-best checkpoint): 3/3 excellent —
+  associations with dependent options, reversible migrations with
+  index/foreign-key DSL, and find/find_by/where semantics. The most
+  consistent chat result of any stage.
+- Note: from this stage on, `bin/train --resume` (and `bin/refresh`)
+  automatically continue from the last session's val-best checkpoint
+  instead of the drifted final.
+
+### Base vs trained — 10-question comparison (after refresh #2)
+
+10 questions spanning every trained area (test frameworks, time
+manipulation, framework internals, job queues, rich text, realtime), same
+seed 42, max-tokens 180, asked of both the base model and the exported
+trained model.
+
+- **Base model: 0/10 delivered** — stalled in `<think>` mode on every
+  question and never produced a final answer within the budget (one
+  sketched its example then stopped).
+- **Trained model: 10/10 answered directly** — 8 excellent-to-good
+  (correct class structures, exact retry/discard API, include-vs-prepend
+  mechanics, ActionText setup, connection identification), 2 partial:
+  the Timecop block-return value claim (since curated into the capsule)
+  and an `assert_enqueued_with` example missing its canonical block form.
+
+**Verdict:** the behavioral win is absolute — the trained model answers
+Ruby questions in one pass where the base never finishes. Knowledge is
+strong on the usage surface across all trained areas; the two blur spots
+are the same details-level class the capsule refresh cycle exists to fix.
 
 ### Base-vs-adapter comparison (after the run)
 

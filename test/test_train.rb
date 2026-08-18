@@ -101,10 +101,37 @@ Dir.mktmpdir("mlx_sandbox") do |sandbox|
   train = File.join(sandbox, "_mlx", "train.jsonl")
   valid = File.join(sandbox, "_mlx", "valid.jsonl")
   assert File.exist?(train) && File.exist?(valid), "train/valid written under the data root"
-  assert_equal 2, File.readlines(train).size, "train slice takes the first 2 entries"
-  assert_equal 1, File.readlines(valid).size, "valid slice takes the next entry"
+  assert_equal 2, File.readlines(train).size, "train slice takes 2 entries"
+  assert_equal 1, File.readlines(valid).size, "valid slice takes 1 entry"
   first_msg = JSON.parse(File.readlines(train).first)["messages"]
   assert_equal %w[user assistant], first_msg.map { |m| m["role"] }, "MLX messages format"
+
+  # --- seeded shuffle: reproducible split, content preserved ---
+  pairs_of = lambda do |dir|
+    (Dir.glob(File.join(dir, "_mlx", "{train,valid}.jsonl")).flat_map do |f|
+      File.readlines(f).map do |l|
+        m = JSON.parse(l)["messages"]
+        [m[0]["content"], m[1]["content"]]
+      end
+    end).sort
+  end
+  expected_pairs = [["one", "a" * 100], ["two", "b" * 100], ["three", "c" * 100]].sort
+  assert_equal expected_pairs, pairs_of.call(sandbox), "every input entry lands in train or valid"
+
+  run_build = lambda do |dir, seed_flag|
+    FileUtils.rm_rf(File.join(dir, "_mlx"))
+    system({ "LLM_TRAINER_ROOT" => dir }, RbConfig.ruby,
+           File.join(SCRIPTS, "build", "build_mlx_data.rb"), "2", "1", seed_flag,
+           out: File::NULL, err: File::NULL) or raise "build failed"
+    File.read(File.join(dir, "_mlx", "train.jsonl")) + File.read(File.join(dir, "_mlx", "valid.jsonl"))
+  end
+  first_run = run_build.call(sandbox, "--shuffle-seed=7")
+  assert_equal first_run, run_build.call(sandbox, "--shuffle-seed=7"),
+               "same seed → same split (reproducible)"
+  assert first_run.start_with?(%({"messages":)), "shuffled output still valid MLX JSON"
+  first_train = JSON.parse(File.readlines(File.join(sandbox, "_mlx", "train.jsonl")).first)["messages"]
+  assert_equal "c" * 100, first_train[1]["content"],
+               "seed 7 changes the split order (the third input entry lands first)"
 end
 
 # --- snapshot_adapter: copies the current model state ---
@@ -271,6 +298,67 @@ assert lines[0].start_with?("little learning"), "regression verdict"
 lines = assess_session_summary(baseline_val: 1.000, best_val: 0.980, best_iter: 50,
                                final_val: 0.980, final_iter: 100)
 assert lines[0].start_with?("modest change"), "small change verdict"
+
+# --- resume_from_val_best: drift → resume from the val-best checkpoint ---
+Dir.mktmpdir("resume_best") do |d|
+  adapter_dir = File.join(d, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "drifted-final-weights")
+  File.write(File.join(adapter_dir, "0002600_adapters.safetensors"), "val-best-weights")
+  File.write(File.join(d, "train_proper.log"), <<~LOG)
+    Starting training..., iters: 2816
+    Iter 1: Val loss 1.193, Val took 10s
+    Iter 2600: Val loss 0.824, Val took 10s
+    Iter 2816: Val loss 1.173, Val took 10s
+  LOG
+
+  msg = resume_from_val_best(File.join(d, "train_proper.log"), adapter_dir)
+  assert msg, "drift detected → a message is returned"
+  assert msg.include?("iter 2600") && msg.include?("0.824"), "message names the val-best"
+  assert msg.include?("1.173"), "message names the drifted final"
+  assert_equal "val-best-weights",
+               File.read(File.join(adapter_dir, "adapters.safetensors")),
+               "adapters.safetensors replaced with the val-best checkpoint"
+end
+
+# --- resume_from_val_best: no-op cases ---
+Dir.mktmpdir("resume_best_noop") do |d|
+  adapter_dir = File.join(d, "_mlx", "adapters_qwen3")
+  FileUtils.mkdir_p(adapter_dir)
+  File.write(File.join(adapter_dir, "adapters.safetensors"), "live-weights")
+
+  # no log at all
+  assert_nil resume_from_val_best(File.join(d, "missing.log"), adapter_dir),
+             "missing log → no change"
+
+  # log exists but the session never saved a checkpoint for its best (iter 1)
+  File.write(File.join(d, "train_proper.log"), <<~LOG)
+    Starting training..., iters: 100
+    Iter 1: Val loss 1.0, Val took 10s
+    Iter 100: Val loss 1.3, Val took 10s
+  LOG
+  assert_nil resume_from_val_best(File.join(d, "train_proper.log"), adapter_dir),
+             "best at iter 1 (no checkpoint saved) → no change"
+
+  # final IS the best (no drift) — identical files
+  File.write(File.join(d, "train_proper.log"), <<~LOG)
+    Starting training..., iters: 346
+    Iter 1: Val loss 1.334, Val took 10s
+    Iter 346: Val loss 0.890, Val took 10s
+  LOG
+  File.write(File.join(adapter_dir, "0000346_adapters.safetensors"), "live-weights")
+  assert_nil resume_from_val_best(File.join(d, "train_proper.log"), adapter_dir),
+             "final already the best → no change"
+
+  # checkpoint file for the best iter was deleted
+  File.write(File.join(d, "train_proper.log"), <<~LOG)
+    Starting training..., iters: 100
+    Iter 1: Val loss 1.2, Val took 10s
+    Iter 100: Val loss 0.9, Val took 10s
+  LOG
+  assert_nil resume_from_val_best(File.join(d, "train_proper.log"), adapter_dir),
+             "missing checkpoint file → no change"
+end
 
 # --- run_with_log tees output to a file ---
 Dir.mktmpdir("log_sandbox") do |d|

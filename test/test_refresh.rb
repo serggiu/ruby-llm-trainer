@@ -82,13 +82,42 @@ Dir.mktmpdir("refresh_ready") do |sandbox|
   assert out.include?("--resume-adapter-file"), "dry-run shows the resume flag"
 end
 
-# --- combined capsule write ---
+# --- combined capsule write (shuffled + 2048-token split) ---
 Dir.mktmpdir("combined") do |sandbox|
   a = File.join(sandbox, "a.jsonl")
   b = File.join(sandbox, "b.jsonl")
-  File.write(a, "line-a1\nline-a2\n")
-  File.write(b, "line-b1\n")
+  entry = lambda do |h, g|
+    JSON.generate("conversations" => [
+      { "from" => "human", "value" => h },
+      { "from" => "gpt", "value" => g },
+    ])
+  end
+  File.write(a, [entry.call("q1", "a1"), entry.call("q2", "a2"), entry.call("q3", "a3")].join("\n") + "\n")
+  File.write(b, [entry.call("qb1", "b1"), entry.call("qb2", "b2"), entry.call("qb3", "b3")].join("\n") + "\n")
   combined = File.join(sandbox, "out", "combined.jsonl")
   write_combined_capsules([a, b], combined)
-  assert_equal "line-a1\nline-a2\nline-b1\n", File.read(combined), "capsules concatenated in order"
+  lines = File.readlines(combined)
+  assert_equal 6, lines.size, "all capsule lines written"
+  contents = lines.map { |l| JSON.parse(l)["conversations"][0]["value"] }
+  assert_equal %w[q1 q2 q3 qb1 qb2 qb3].sort, contents.sort, "same content, shuffled order"
+  assert lines.join != File.read(a) + File.read(b),
+         "order actually differs from the grouped concatenation"
+
+  # Seeded shuffle: same seed → same order (reproducible splits).
+  c1 = File.join(sandbox, "c1.jsonl")
+  c2 = File.join(sandbox, "c2.jsonl")
+  write_combined_capsules([a, b], c1)
+  write_combined_capsules([a, b], c2)
+  assert_equal File.read(c1), File.read(c2), "shuffle is deterministic per default seed"
+
+  # Over-cap capsule entries are split into (part i/n) pairs, like the main
+  # pipeline — so mlx-lm never truncates them.
+  File.write(File.join(sandbox, "long.jsonl"), entry.call("big question", "x" * 20_000) + "\n")
+  out = File.join(sandbox, "out2", "combined.jsonl")
+  write_combined_capsules([File.join(sandbox, "long.jsonl")], out)
+  split_lines = File.readlines(out)
+  assert split_lines.size > 1, "over-cap entry split into multiple pairs"
+  split_humans = split_lines.map { |l| JSON.parse(l)["conversations"][0]["value"] }
+  assert split_humans.all? { |q| q.start_with?("big question") && q.include?("(part") },
+         "split pairs keep the question and carry the (part i/n) marker"
 end

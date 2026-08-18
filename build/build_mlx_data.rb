@@ -21,6 +21,11 @@ ROOT = ENV["LLM_TRAINER_ROOT"] || File.expand_path("..", File.dirname(__FILE__))
 #   ruby build/build_mlx_data.rb                 # → _mlx/{train,valid}.jsonl (300/50)
 #   ruby build/build_mlx_data.rb 12000 1000      # bigger slice
 #   ruby build/build_mlx_data.rb 0 0 --full      # whole set: 0 = "no limit"
+#   ruby build/build_mlx_data.rb 2 1 --shuffle-seed=7
+#
+# Entries are shuffled (fixed default seed, same as bin/refresh) BEFORE the
+# train/valid split, so the sequential cut gets a representative mix of the
+# whole set instead of the alphabetically-last entries.
 
 require "fileutils"
 require "json"
@@ -38,6 +43,13 @@ OUT_DIR     = File.expand_path(POS_ARGS[3] || File.join(ROOT, "_mlx"))
 MAX_CHARS = begin
   flag = FLAGS.find { |a| a.start_with?("--max-chars=") }
   flag ? Integer(flag.split("=", 2)[1]) : 0
+end
+
+# Fixed default seed (matches bin/refresh's capsule shuffle) so train/valid
+# splits are reproducible across runs. Pass --shuffle-seed=0 to disable.
+SHUFFLE_SEED = begin
+  flag = FLAGS.find { |a| a.start_with?("--shuffle-seed=") }
+  flag ? Integer(flag.split("=", 2)[1]) : 20240818
 end
 
 def to_mlx_line(human, gpt)
@@ -64,6 +76,7 @@ train_count = 0
 valid_count = 0
 skipped = 0
 skipped_long = 0
+entries = []
 
 File.foreach(INPUT) do |line|
   begin
@@ -82,6 +95,12 @@ File.foreach(INPUT) do |line|
     next
   end
 
+  entries << [human, gpt]
+end
+
+entries.shuffle!(random: Random.new(SHUFFLE_SEED)) unless SHUFFLE_SEED.zero?
+
+entries.each do |human, gpt|
   out = if !limited?(train_count, TRAIN_COUNT)
           train
         elsif !limited?(valid_count, VALID_COUNT)

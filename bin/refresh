@@ -23,6 +23,9 @@
 #   --dry-run       print the commands without running them
 
 load File.join(File.expand_path("..", __dir__), "bin", "train") # SCRIPTS/ROOT/RUBY + shared helpers (guard keeps train's main out)
+load File.join(File.expand_path("..", __dir__), "build", "build_dataset.rb") # MAX_CONTEXT_TOKENS + split_long_entries (guard keeps its main out)
+
+require "json"
 
 # Parses ARGV and builds the refresh plan. Raises ArgumentError on bad input.
 # Returns a hash with the capsule/command details (see test/test_refresh.rb).
@@ -81,13 +84,35 @@ def build_refresh_plan(argv, scripts:, data_root:, model_cache_glob: DEFAULT_MOD
 end
 
 # Concatenates every capsule into one ShareGPT JSONL (the input format
-# build_mlx_data.rb consumes).
-def write_combined_capsules(capsules, combined)
+# build_mlx_data.rb consumes), splitting any entry over MAX_CONTEXT_TOKENS
+# into "(part i/n)" pairs (the capsules are not pre-split at generation
+# time, unlike the main SFT set), then shuffling so the sequential
+# train/valid split gets a representative mix of every topic instead of the
+# alphabetically-last capsules. Seeded by default for reproducible splits.
+def write_combined_capsules(capsules, combined, rng = Random.new(20240818))
   FileUtils.mkdir_p(File.dirname(combined))
-  File.open(combined, "w:UTF-8") do |out|
-    capsules.each do |capsule|
-      File.foreach(capsule) { |line| out.write(line) }
+  lines = []
+  capsules.each do |capsule|
+    File.foreach(capsule) do |line|
+      begin
+        convs = JSON.parse(line)["conversations"]
+        human = convs[0]["value"]
+        gpt = convs[1]["value"]
+      rescue StandardError => e
+        puts "  [warn] skipping capsule entry: #{e.message}"
+        next
+      end
+      split_long_entries(human, gpt).each do |h, a|
+        lines << JSON.generate("conversations" => [
+          { "from" => "human", "value" => h },
+          { "from" => "gpt", "value" => a },
+        ]) + "\n"
+      end
     end
+  end
+  lines.shuffle!(random: rng)
+  File.open(combined, "w:UTF-8") do |out|
+    lines.each { |line| out.write(line) }
   end
 end
 
@@ -102,6 +127,9 @@ if __FILE__ == $PROGRAM_NAME
     abort "No trained model found in #{plan[:adapter_dir]}\n" \
           "Run `ruby bin/train` first to train one, then retry."
   end
+
+  msg = resume_from_val_best(plan[:log_path], plan[:adapter_dir])
+  puts msg if msg
 
   total = 0
   plan[:capsules].each { |c| total += count_entries(c) }
